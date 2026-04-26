@@ -1,11 +1,12 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
+const fetch = require('node-fetch');
 
 // Firebase Configuration
 const FIREBASE_URL = process.env.FIREBASE_URL;
-const DELIVERY_FEE = 150; // PKR Delivery Fee
-const TAX_RATE = 0.05; // 5% Tax
+const DELIVERY_FEE = 150;
+const TAX_RATE = 0.05;
 
 // Store user sessions
 const userSessions = {};
@@ -19,8 +20,7 @@ const ORDER_STATES = {
     CHECKOUT_ADDRESS: 'CHECKOUT_ADDRESS',
     CHECKOUT_NAME: 'CHECKOUT_NAME',
     CHECKOUT_PHONE: 'CHECKOUT_PHONE',
-    CONFIRMING_ORDER: 'CONFIRMING_ORDER',
-    TRACKING_ORDER: 'TRACKING_ORDER'
+    CONFIRMING_ORDER: 'CONFIRMING_ORDER'
 };
 
 // Function to fetch menu from Firebase
@@ -45,14 +45,17 @@ async function getMenuFromApp() {
 // Function to get user's orders
 async function getUserOrders(waNumber) {
     try {
-        const response = await fetch(`${FIREBASE_URL}/orders.json?orderBy="userId"&equalTo="whatsapp_${waNumber}"`);
+        const response = await fetch(`${FIREBASE_URL}/orders.json`);
         const data = await response.json();
         if (!data) return [];
         
-        return Object.keys(data).map(key => ({
-            id: key,
-            ...data[key]
-        })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        const orders = [];
+        for (const [key, value] of Object.entries(data)) {
+            if (value.userId === `whatsapp_${waNumber}` || value.userId === waNumber) {
+                orders.push({ id: key, ...value });
+            }
+        }
+        return orders.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     } catch (error) {
         console.error("Failed to fetch user orders:", error);
         return [];
@@ -71,7 +74,7 @@ async function getOrderById(orderId) {
     }
 }
 
-// Function to save order to Firebase
+// Function to save order
 async function saveOrder(orderData) {
     try {
         const response = await fetch(`${FIREBASE_URL}/orders.json`, {
@@ -84,24 +87,6 @@ async function saveOrder(orderData) {
     } catch (error) {
         console.error("Firebase Error: ", error);
         throw error;
-    }
-}
-
-// Function to send notification
-async function sendNotification(userId, title, body) {
-    try {
-        await fetch(`${FIREBASE_URL}/notifications/${userId}.json`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                title: title,
-                body: body,
-                timestamp: Date.now(),
-                read: false
-            })
-        });
-    } catch (error) {
-        console.error("Notification Error:", error);
     }
 }
 
@@ -136,19 +121,19 @@ function formatPKR(amount) {
     return `₨${amount.toFixed(2)}`;
 }
 
-// Get status emoji and message
-function getStatusInfo(status) {
-    const statusMap = {
-        'Placed': { emoji: '📋', message: '✅ Order placed and confirmed', color: '🟡' },
-        'Preparing': { emoji: '🔪', message: '👨‍🍳 Restaurant is preparing your food', color: '🔵' },
-        'Out for Delivery': { emoji: '🚚', message: '🏍️ Rider is on the way with your order', color: '🟣' },
-        'Delivered': { emoji: '✅', message: '🎉 Order delivered successfully! Enjoy your meal!', color: '🟢' },
-        'Cancelled': { emoji: '❌', message: '⚠️ Order was cancelled', color: '🔴' }
+// Get status emoji
+function getStatusEmoji(status) {
+    const emojis = {
+        'Placed': '📋',
+        'Preparing': '🔪',
+        'Out for Delivery': '🚚',
+        'Delivered': '✅',
+        'Cancelled': '❌'
     };
-    return statusMap[status] || { emoji: '📋', message: 'Order received', color: '⚪' };
+    return emojis[status] || '📋';
 }
 
-// Create order tracking visual
+// Create tracking visual
 function createTrackingVisual(status) {
     const steps = ['Placed', 'Preparing', 'Out for Delivery', 'Delivered'];
     const currentIndex = steps.indexOf(status);
@@ -157,22 +142,24 @@ function createTrackingVisual(status) {
     for (let i = 0; i < steps.length; i++) {
         if (i < currentIndex) {
             visual += '✅';
-        } else if (i === currentIndex) {
+        } else if (i === currentIndex && currentIndex !== -1) {
             visual += '📍';
         } else {
             visual += '⭕';
         }
         if (i < steps.length - 1) visual += '━━━';
     }
-    
     return visual;
 }
 
 async function startBot() {
     if (!FIREBASE_URL) {
-        console.log("❌ ERROR: FIREBASE_URL is missing in environment variables!");
+        console.log("❌ ERROR: FIREBASE_URL is missing in GitHub Secrets!");
         process.exit(1);
     }
+
+    console.log("🚀 Starting JavaGoat WhatsApp Bot v2.0...");
+    console.log(`📡 Firebase URL: ${FIREBASE_URL}`);
 
     const { state, saveCreds } = await useMultiFileAuthState('session_data');
     const { version } = await fetchLatestBaileysVersion();
@@ -182,7 +169,7 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ["JavaGoatBot", "Chrome", "2.0"]
+        browser: ["JavaGoat", "Chrome", "2.0"]
     });
 
     sock.ev.on('connection.update', (update) => {
@@ -198,72 +185,21 @@ async function startBot() {
 
         if (connection === 'open') {
             console.log('✅ JAVAGOAT BOT IS ONLINE!');
-            console.log('📱 Bot is ready to take orders and track deliveries!');
+            console.log('📱 Bot is ready to take orders!');
+            console.log('💡 Commands: menu, order [item], cart, checkout, track, help');
         }
         
         if (connection === 'close') {
             const reason = lastDisconnect?.error?.output?.statusCode;
+            console.log(`❌ Connection closed. Reason: ${reason}`);
             if (reason !== DisconnectReason.loggedOut) {
-                console.log('🔄 Reconnecting...');
-                startBot();
+                console.log('🔄 Reconnecting in 5 seconds...');
+                setTimeout(startBot, 5000);
             }
         }
     });
 
     sock.ev.on('creds.update', saveCreds);
-
-    // Listen for order status changes and send updates
-    const orderStatusListener = {};
-    
-    async function watchOrderStatus(orderId, waNumber, sock) {
-        if (orderStatusListener[orderId]) return;
-        
-        orderStatusListener[orderId] = true;
-        const orderRef = `${FIREBASE_URL}/orders/${orderId}.json`;
-        
-        let lastStatus = '';
-        
-        const interval = setInterval(async () => {
-            try {
-                const response = await fetch(orderRef);
-                const order = await response.json();
-                
-                if (order && order.status !== lastStatus) {
-                    lastStatus = order.status;
-                    const statusInfo = getStatusInfo(order.status);
-                    const trackingVisual = createTrackingVisual(order.status);
-                    
-                    const statusUpdateMsg = `
-╔════════════════════════════════╗
-║     📦 ORDER STATUS UPDATE      ║
-╚════════════════════════════════╝
-
-*Order ID:* #${orderId.substring(0, 8)}
-${trackingVisual}
-
-*Status:* ${statusInfo.emoji} ${order.status}
-${statusInfo.message}
-
-*Items:* ${order.items.map(i => `${i.quantity}x ${i.name}`).join(', ')}
-*Total:* ${formatPKR(order.total)}
-
-_You can always check status by typing:_
-*track ${orderId.substring(0, 8)}*
-                    `;
-                    
-                    await sock.sendMessage(waNumber, { text: statusUpdateMsg });
-                    
-                    // If order is delivered, clear the interval
-                    if (order.status === 'Delivered') {
-                        clearInterval(interval);
-                        delete orderStatusListener[orderId];
-                    }
-                }
-            } catch (error) {
-                console.error("Status check error:", error);
-            }
-        }, 30000); // Check every 30 seconds
-    }
 
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
@@ -274,7 +210,7 @@ _You can always check status by typing:_
         const waNumber = sender.split('@')[0];
         const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim().toLowerCase();
         
-        // Initialize user session
+        // Initialize session
         if (!userSessions[sender]) {
             userSessions[sender] = {
                 cart: [],
@@ -287,90 +223,62 @@ _You can always check status by typing:_
         
         console.log(`📩 [${waNumber}]: ${text}`);
 
-        // ============ ORDER TRACKING FEATURE ============
-        if (text === "track" || text === "tracking" || text === "my orders") {
+        // ============ TRACK ORDER ============
+        if (text === "track" || text === "my orders") {
             const userOrders = await getUserOrders(waNumber);
             
             if (userOrders.length === 0) {
                 await sock.sendMessage(sender, { 
-                    text: `📭 *No Orders Found*
-
-You haven't placed any orders yet.
-
-Type *menu* to see our delicious food options!
-
-💡 *Quick tip:* Type *help* for all commands` 
+                    text: `📭 *No Orders Found*\n\nYou haven't placed any orders yet.\n\nType *menu* to see our delicious food options!` 
                 });
                 return;
             }
             
-            let recentOrdersMsg = `📋 *YOUR ORDERS* 📋\n\n`;
-            recentOrdersMsg += `Total Orders: ${userOrders.length}\n━━━━━━━━━━━━━━━━\n\n`;
+            let msg = `📋 *YOUR ORDERS* 📋\n\n`;
+            msg += `Total Orders: ${userOrders.length}\n━━━━━━━━━━━━━━━━\n\n`;
             
             userOrders.slice(0, 5).forEach((order, idx) => {
-                const statusInfo = getStatusInfo(order.status);
                 const date = new Date(order.timestamp).toLocaleDateString();
-                const time = new Date(order.timestamp).toLocaleTimeString();
-                
-                recentOrdersMsg += `${idx + 1}. *Order #${order.id.substring(0, 8)}*\n`;
-                recentOrdersMsg += `   ${statusInfo.emoji} Status: ${order.status}\n`;
-                recentOrdersMsg += `   📅 ${date} at ${time}\n`;
-                recentOrdersMsg += `   🍽️ Items: ${order.items.length}\n`;
-                recentOrdersMsg += `   💰 Total: ${formatPKR(order.total)}\n`;
-                recentOrdersMsg += `   ━━━━━━━━━━━━━━━━\n\n`;
+                msg += `${idx + 1}. *Order #${order.id.substring(0, 8)}*\n`;
+                msg += `   ${getStatusEmoji(order.status)} Status: ${order.status}\n`;
+                msg += `   📅 ${date}\n`;
+                msg += `   💰 ${formatPKR(order.total)}\n━━━━━━━━━━━━━━━\n`;
             });
             
-            recentOrdersMsg += `_To track a specific order, type:_\n*track ORDER_ID_\n\n`;
-            recentOrdersMsg += `_Example: track ${userOrders[0].id.substring(0, 8)}_\n\n`;
-            recentOrdersMsg += `💡 *Tip:* You'll receive automatic updates when your order status changes!`;
+            msg += `\n_To track specific order: track ORDER_ID_\n`;
+            msg += `_Example: track ${userOrders[0].id.substring(0, 8)}_`;
             
-            await sock.sendMessage(sender, { text: recentOrdersMsg });
+            await sock.sendMessage(sender, { text: msg });
             return;
         }
         
         if (text.startsWith("track ")) {
             let orderId = text.replace("track", "").trim();
             
-            // Try to find order if partial ID is given
+            // Try to find order
+            const userOrders = await getUserOrders(waNumber);
+            let fullOrderId = orderId;
+            
             if (orderId.length < 8) {
-                const userOrders = await getUserOrders(waNumber);
-                const matchedOrder = userOrders.find(o => o.id.substring(0, 8).startsWith(orderId));
-                if (matchedOrder) {
-                    orderId = matchedOrder.id;
-                }
+                const matched = userOrders.find(o => o.id.substring(0, 8).startsWith(orderId));
+                if (matched) fullOrderId = matched.id;
             }
             
-            const order = await getOrderById(orderId);
+            const order = await getOrderById(fullOrderId);
             
             if (!order) {
                 await sock.sendMessage(sender, { 
-                    text: `❌ *Order Not Found*
-
-Please check the order ID and try again.
-
-Type *track* to see your recent orders with their IDs.` 
+                    text: `❌ *Order Not Found*\n\nPlease check the order ID and try again.\nType *track* to see your orders.` 
                 });
                 return;
             }
             
-            // Verify order belongs to this user
-            if (order.userId !== `whatsapp_${waNumber}` && order.userId !== waNumber) {
-                await sock.sendMessage(sender, { 
-                    text: `🔒 *Access Denied*
-
-This order does not belong to your account.` 
-                });
-                return;
-            }
-            
-            const statusInfo = getStatusInfo(order.status);
             const trackingVisual = createTrackingVisual(order.status);
-            
             const itemsList = order.items.map(item => 
                 `   • ${item.name} x${item.quantity} = ${formatPKR(item.price * item.quantity)}`
             ).join('\n');
             
-            const trackingMsg = `
+            const msg = `
 ╔════════════════════════════════╗
 ║        🚚 ORDER TRACKING        ║
 ╚════════════════════════════════╝
@@ -380,49 +288,30 @@ This order does not belong to your account.`
 
 ${trackingVisual}
 
-*Status:* ${statusInfo.emoji} ${order.status}
-${statusInfo.message}
+*Status:* ${getStatusEmoji(order.status)} ${order.status}
 
 *Items:*
 ${itemsList}
 
-*Bill Details:*
-Subtotal: ${formatPKR(order.subtotal || (order.total - DELIVERY_FEE))}
-Tax (5%): ${formatPKR(order.tax || 0)}
-Delivery Fee: ${formatPKR(DELIVERY_FEE)}
-━━━━━━━━━━━━━━━━━━━━
-*Total: ${formatPKR(order.total)}*
-
-*Payment Method:* ${order.method || 'Cash on Delivery'}
+*Total:* ${formatPKR(order.total)}
+*Payment:* ${order.method || 'Cash on Delivery'}
 
 *Delivery Address:*
 ${order.address || 'Not specified'}
 
 ━━━━━━━━━━━━━━━━━━━━
-💡 *You'll receive automatic updates when status changes!*
-
-_Need help? Contact support: support@javagoat.com_
-            `;
+_You'll receive automatic updates when status changes!_`;
             
-            await sock.sendMessage(sender, { text: trackingMsg });
-            
-            // Start watching this order for status updates
-            await watchOrderStatus(order.id, sender, sock);
+            await sock.sendMessage(sender, { text: msg });
             return;
         }
 
-        // ============ CHECKOUT PROCESS ============
+        // ============ CHECKOUT ============
         if (session.state === ORDER_STATES.CHECKOUT_NAME) {
             session.tempData.name = text;
             session.state = ORDER_STATES.CHECKOUT_PHONE;
             await sock.sendMessage(sender, { 
-                text: `📱 *Phone Number*
-
-Please provide your phone number for delivery coordination:
-
-*Example:* 03XX 1234567
-
-_We'll only use this for delivery updates_` 
+                text: `📱 *Phone Number*\n\nPlease provide your phone number for delivery:\n\nExample: 03XX 1234567` 
             });
             return;
         }
@@ -431,13 +320,7 @@ _We'll only use this for delivery updates_`
             session.tempData.phone = text;
             session.state = ORDER_STATES.CHECKOUT_ADDRESS;
             await sock.sendMessage(sender, { 
-                text: `📍 *Delivery Address*
-
-Please provide your complete delivery address:
-
-*Example:* House #123, Street 5, DHA Phase 2, Karachi
-
-_Include landmark for easy finding_` 
+                text: `📍 *Delivery Address*\n\nPlease provide your complete delivery address:\n\nExample: House #123, Street 5, DHA, Karachi` 
             });
             return;
         }
@@ -448,16 +331,14 @@ _Include landmark for easy finding_`
             
             const cartSummary = getCartSummary(session.cart);
             const confirmMsg = `
-╔════════════════════════════════╗
-║        🛒 ORDER SUMMARY         ║
-╚════════════════════════════════╝
+🛒 *ORDER SUMMARY*
 
 ${cartSummary.itemsList}
 
 📊 *Bill Breakdown:*
 Subtotal: ${formatPKR(cartSummary.subtotal)}
 Tax (5%): ${formatPKR(cartSummary.tax)}
-Delivery Fee: ${formatPKR(DELIVERY_FEE)}
+Delivery: ${formatPKR(DELIVERY_FEE)}
 ━━━━━━━━━━━━━━━━━━━━
 *Total: ${formatPKR(cartSummary.total)}*
 
@@ -468,10 +349,8 @@ Address: ${session.tempData.address}
 
 ━━━━━━━━━━━━━━━━━━━━
 *Reply with:*
-✓ *CONFIRM* - To place your order
-✗ *CANCEL* - To cancel order
-
-_Once confirmed, you'll receive tracking updates automatically!_`;
+✅ *CONFIRM* - Place order
+❌ *CANCEL* - Cancel order`;
             
             await sock.sendMessage(sender, { text: confirmMsg });
             return;
@@ -508,44 +387,9 @@ _Once confirmed, you'll receive tracking updates automatically!_`;
                 try {
                     const savedOrderId = await saveOrder(newOrder);
                     
-                    // Send confirmation with tracking info
-                    const confirmText = `
-✅ *ORDER CONFIRMED!* ✅
-
-*Order ID:* #${savedOrderId.substring(0, 8)}
-
-${cartSummary.itemsList}
-
-*Total Amount:* ${formatPKR(cartSummary.total)}
-
-🚚 *Delivery Details:*
-📍 ${session.tempData.address}
-📞 ${session.tempData.phone}
-
-━━━━━━━━━━━━━━━━━━━━
-*What's Next?*
-
-1️⃣ You'll receive status updates automatically
-2️⃣ Track anytime: *track ${savedOrderId.substring(0, 8)}*
-3️⃣ Show this ID when picking up
-
-*Estimated Delivery Time:* 30-45 minutes
-
-Thank you for ordering from JavaGoat! 🍔
-
-_Reply *menu* to see more items_`;
-                    
-                    await sock.sendMessage(sender, { text: confirmText });
-                    
-                    // Send notification to Firebase
-                    await sendNotification(
-                        `whatsapp_${waNumber}`,
-                        `Order #${savedOrderId.substring(0, 8)} Placed!`,
-                        `Your order total is ${formatPKR(cartSummary.total)}. We'll notify you when it's ready!`
-                    );
-                    
-                    // Start watching this order
-                    await watchOrderStatus(savedOrderId, sender, sock);
+                    await sock.sendMessage(sender, { 
+                        text: `✅ *ORDER CONFIRMED!* ✅\n\n*Order ID:* #${savedOrderId.substring(0, 8)}\n\n${cartSummary.itemsList}\n\n*Total:* ${formatPKR(cartSummary.total)}\n\n🚚 *Delivery to:* ${session.tempData.address}\n\nYou can track your order anytime with:\n*track ${savedOrderId.substring(0, 8)}*\n\nThank you for ordering from JavaGoat! 🍔` 
+                    });
                     
                     // Reset session
                     userSessions[sender] = {
@@ -556,13 +400,7 @@ _Reply *menu* to see more items_`;
                     
                 } catch (error) {
                     await sock.sendMessage(sender, { 
-                        text: `❌ *Order Failed*
-
-There was an error processing your order.
-
-Please try again later or contact support.
-
-Error: ${error.message}` 
+                        text: `❌ *Order Failed*\n\nError: ${error.message}\nPlease try again.` 
                     });
                 }
                 
@@ -573,56 +411,29 @@ Error: ${error.message}`
                     tempData: {}
                 };
                 await sock.sendMessage(sender, { 
-                    text: `❌ *Order Cancelled*
-
-Your order has been cancelled.
-
-Type *menu* to start a new order.` 
+                    text: `❌ *Order Cancelled*\n\nYour order has been cancelled. Type *menu* to start fresh.` 
                 });
             } else {
                 await sock.sendMessage(sender, { 
-                    text: `Please reply with *CONFIRM* to place your order or *CANCEL* to cancel.` 
+                    text: `Please reply with *CONFIRM* or *CANCEL*` 
                 });
             }
             return;
         }
 
         // ============ SHOW CART ============
-        if (text === "cart" || text === "view cart" || text === "my cart") {
+        if (text === "cart" || text === "view cart") {
             if (session.cart.length === 0) {
                 await sock.sendMessage(sender, { 
-                    text: `🛒 *Your cart is empty*
-
-Add items using:
-*order [item name]*
-or
-*buy [item name]*
-
-Type *menu* to see our delicious food options!` 
+                    text: `🛒 *Cart is empty*\n\nAdd items using:\n*order [item name]*\n\nType *menu* to see our food!` 
                 });
                 return;
             }
             
             const cartSummary = getCartSummary(session.cart);
-            const cartMsg = `
-🛒 *YOUR CART* 🛒
-
-${cartSummary.itemsList}
-
-━━━━━━━━━━━━━━━━━━━━
-*Subtotal:* ${formatPKR(cartSummary.subtotal)}
-*Tax (5%):* ${formatPKR(cartSummary.tax)}
-*Delivery:* ${formatPKR(DELIVERY_FEE)}
-━━━━━━━━━━━━━━━━━━━━
-*Total:* ${formatPKR(cartSummary.total)}
-
-*Commands:*
-✓ *checkout* - Place order
-🗑️ *clear cart* - Remove all items
-➖ *remove [item]* - Remove specific item
-📋 *menu* - Add more items`;
-            
-            await sock.sendMessage(sender, { text: cartMsg });
+            await sock.sendMessage(sender, { 
+                text: `🛒 *YOUR CART* 🛒\n\n${cartSummary.itemsList}\n━━━━━━━━━━━━━━━━━━━━\n*Total: ${formatPKR(cartSummary.total)}*\n\nCommands:\n• *checkout* - Place order\n• *clear cart* - Empty cart\n• *remove [item]* - Remove item` 
+            });
             return;
         }
         
@@ -630,11 +441,7 @@ ${cartSummary.itemsList}
         if (text === "clear cart" || text === "empty cart") {
             session.cart = [];
             await sock.sendMessage(sender, { 
-                text: `🗑️ *Cart Cleared*
-
-Your cart has been emptied.
-
-Type *menu* to browse our food and start fresh!` 
+                text: `🗑️ *Cart Cleared*\n\nType *menu* to browse our food.` 
             });
             return;
         }
@@ -647,51 +454,36 @@ Type *menu* to browse our food and start fresh!`
             );
             
             if (itemIndex !== -1) {
-                const removedItem = session.cart[itemIndex];
+                const removed = session.cart[itemIndex];
                 session.cart.splice(itemIndex, 1);
                 await sock.sendMessage(sender, { 
-                    text: `🗑️ *Removed* ${removedItem.name}
-
-Type *cart* to see your updated cart.` 
+                    text: `🗑️ Removed *${removed.name}*\n\nType *cart* to see updated cart.` 
                 });
             } else {
                 await sock.sendMessage(sender, { 
-                    text: `❌ Could not find "${itemToRemove}" in your cart.
-
-Type *cart* to see what's in your cart.` 
+                    text: `❌ Could not find "${itemToRemove}" in your cart.` 
                 });
             }
             return;
         }
         
         // ============ CHECKOUT ============
-        if (text === "checkout" || text === "place order" || text === "order now") {
+        if (text === "checkout" || text === "place order") {
             if (session.cart.length === 0) {
                 await sock.sendMessage(sender, { 
-                    text: `🛒 *Cart is Empty*
-
-Add items to your cart first using:
-*order [item name]*
-
-Type *menu* to browse our food!` 
+                    text: `🛒 *Cart is empty*\n\nAdd items first using *order [item name]*` 
                 });
                 return;
             }
             
             session.state = ORDER_STATES.CHECKOUT_NAME;
             await sock.sendMessage(sender, { 
-                text: `👤 *Your Name*
-
-Please provide your full name for delivery:
-
-*Example:* Muhammad Ali
-
-_This helps our rider identify you_` 
+                text: `👤 *Your Name*\n\nPlease provide your full name for delivery.` 
             });
             return;
         }
         
-        // ============ ADD TO CART ============
+        // ============ ORDER ITEM ============
         if (text.startsWith("order ") || text.startsWith("buy ")) {
             const productRequested = text.replace(/^(order|buy) /, "").trim().toLowerCase();
             const currentMenu = await getMenuFromApp();
@@ -702,28 +494,17 @@ _This helps our rider identify you_`
             
             if (matchedItems.length === 0) {
                 await sock.sendMessage(sender, { 
-                    text: `❌ *Not Found*
-
-Sorry, we couldn't find *${productRequested}* in our menu.
-
-Type *menu* to see all available items.
-
-💡 *Tip:* Try searching with a smaller keyword like "biryani" instead of "chicken biryani"` 
+                    text: `❌ Sorry, couldn't find *${productRequested}*\n\nType *menu* to see all items.` 
                 });
                 return;
             }
             
-            // If multiple matches, show options
             if (matchedItems.length > 1) {
-                let optionsMsg = `🔍 *Multiple items found for "${productRequested}"*
-
-Please reply with the number:
-
-`;
+                let optionsMsg = `🔍 Multiple items found:\n\n`;
                 matchedItems.forEach((item, idx) => {
-                    optionsMsg += `${idx + 1}. *${item.name}* - ${formatPKR(item.price)}\n`;
+                    optionsMsg += `${idx + 1}. ${item.name} - ${formatPKR(item.price)}\n`;
                 });
-                optionsMsg += `\nOr type *cancel* to cancel.`;
+                optionsMsg += `\nReply with the number.`;
                 
                 session.state = ORDER_STATES.BROWSING_MENU;
                 session.tempData.matchedItems = matchedItems;
@@ -731,65 +512,39 @@ Please reply with the number:
                 return;
             }
             
-            // Single item - ask for quantity
             const item = matchedItems[0];
             session.state = ORDER_STATES.ADDING_TO_CART;
             session.tempData.selectedItem = item;
             
-            const quantityMsg = `🛒 *Add to Cart*
-
-*${item.name}* - ${formatPKR(item.price)}
-
-Please reply with the quantity (1-10):
-
-_Type *cancel* to cancel_
-
-💡 *You can add multiple items before checkout!*`;
+            const msg = `🛒 *${item.name}* - ${formatPKR(item.price)}\n\nReply with quantity (1-10):\n\nType *cancel* to cancel.`;
             
             if (item.imageUrl) {
-                await sock.sendMessage(sender, { 
-                    image: { url: item.imageUrl }, 
-                    caption: quantityMsg 
-                });
+                await sock.sendMessage(sender, { image: { url: item.imageUrl }, caption: msg });
             } else {
-                await sock.sendMessage(sender, { text: quantityMsg });
+                await sock.sendMessage(sender, { text: msg });
             }
             return;
         }
         
-        // Handle quantity input
+        // Handle quantity
         if (session.state === ORDER_STATES.ADDING_TO_CART) {
             if (text === "cancel") {
                 session.state = ORDER_STATES.IDLE;
                 session.tempData = {};
-                await sock.sendMessage(sender, { 
-                    text: `❌ *Cancelled*
-
-Item was not added to cart.
-
-Type *menu* to browse or *cart* to see your items.` 
-                });
+                await sock.sendMessage(sender, { text: `❌ Cancelled.` });
                 return;
             }
             
             const quantity = parseInt(text);
             if (isNaN(quantity) || quantity < 1 || quantity > 10) {
-                await sock.sendMessage(sender, { 
-                    text: `❌ *Invalid Quantity*
-
-Please enter a number between 1 and 10.
-
-Example: *2*` 
-                });
+                await sock.sendMessage(sender, { text: `❌ Invalid quantity. Please enter 1-10.` });
                 return;
             }
             
             const item = session.tempData.selectedItem;
-            
-            // Check if item already exists
-            const existingItemIndex = session.cart.findIndex(cartItem => cartItem.id === item.id);
-            if (existingItemIndex !== -1) {
-                session.cart[existingItemIndex].quantity += quantity;
+            const existing = session.cart.find(i => i.id === item.id);
+            if (existing) {
+                existing.quantity += quantity;
             } else {
                 session.cart.push({
                     id: item.id,
@@ -803,241 +558,124 @@ Example: *2*`
             session.state = ORDER_STATES.IDLE;
             session.tempData = {};
             
-            const cartSummary = getCartSummary(session.cart);
-            const addMsg = `
-✅ *Added to Cart!*
-
-${quantity}x ${item.name} added.
-
-📊 *Current Cart Total:* ${formatPKR(cartSummary.total)}
-📦 *Total Items:* ${cartSummary.itemCount}
-
-*What now?*
-• Type *cart* - View cart
-• Type *checkout* - Place order
-• Type *menu* - Add more items
-• Type *order [item]* - Continue shopping`;
-            
-            await sock.sendMessage(sender, { text: addMsg });
+            await sock.sendMessage(sender, { 
+                text: `✅ Added ${quantity}x ${item.name} to cart!\n\nType *cart* to view or *checkout* to place order.` 
+            });
             return;
         }
         
-        // Handle multiple item selection
+        // Handle multiple selection
         if (session.state === ORDER_STATES.BROWSING_MENU) {
             const selection = parseInt(text);
             const matchedItems = session.tempData.matchedItems;
             
             if (!isNaN(selection) && selection >= 1 && selection <= matchedItems.length) {
-                const selectedItem = matchedItems[selection - 1];
+                const selected = matchedItems[selection - 1];
                 session.state = ORDER_STATES.ADDING_TO_CART;
-                session.tempData.selectedItem = selectedItem;
+                session.tempData.selectedItem = selected;
                 session.tempData.matchedItems = null;
-                
                 await sock.sendMessage(sender, { 
-                    text: `Please reply with the quantity for *${selectedItem.name}* (1-10):
-
-Type *cancel* to cancel.` 
+                    text: `Quantity for *${selected.name}* (1-10):` 
                 });
             } else if (text === "cancel") {
                 session.state = ORDER_STATES.IDLE;
                 session.tempData = {};
-                await sock.sendMessage(sender, { text: `❌ Cancelled. Type *menu* to browse.` });
+                await sock.sendMessage(sender, { text: `Cancelled.` });
             } else {
                 await sock.sendMessage(sender, { 
-                    text: `Please reply with a number between 1 and ${matchedItems.length}, or type *cancel*.` 
+                    text: `Please reply with a number 1-${matchedItems.length}.` 
                 });
             }
             return;
         }
         
-        // ============ DISPLAY MENU ============
-        if (text.includes("menu") || text === "menu" || text === "food" || text === "dishes") {
+        // ============ MENU ============
+        if (text === "menu" || text === "food" || text === "dishes" || text === "list") {
             const currentMenu = await getMenuFromApp();
             
             if (currentMenu.length === 0) {
-                await sock.sendMessage(sender, { 
-                    text: `🍽️ *Menu Currently Empty*
-
-Please check back soon! Our menu is being updated.` 
-                });
+                await sock.sendMessage(sender, { text: "Menu is empty. Please check back soon!" });
                 return;
             }
             
-            let menuMessage = `🍔 *JAVAGOAT MENU* 🍕\n\n`;
-            menuMessage += `━━━━━━━━━━━━━━━━━━━━\n`;
-            
+            let msg = "🍔 *JAVAGOAT MENU* 🍕\n\n";
             currentMenu.slice(0, 15).forEach((item, idx) => {
-                menuMessage += `${idx + 1}. *${item.name}*\n`;
-                menuMessage += `   💰 ${formatPKR(item.price)}\n`;
-                menuMessage += `   ━━━━━━━━━━━━━━━\n`;
+                msg += `${idx + 1}. *${item.name}* - ${formatPKR(item.price)}\n`;
             });
+            msg += "\n📝 *To order:* `order [dish name]`\n";
+            msg += "📦 *Track orders:* `track`\n";
+            msg += "🛒 *View cart:* `cart`\n";
+            msg += "✅ *Checkout:* `checkout`\n";
+            msg += "❓ *Help:* `help`";
             
-            if (currentMenu.length > 15) {
-                menuMessage += `\n_And ${currentMenu.length - 15} more items available..._\n`;
-            }
-            
-            menuMessage += `\n📝 *How to order:*\n`;
-            menuMessage += `• Type *order [dish name]*\n`;
-            menuMessage += `• Example: *order biryani*\n\n`;
-            
-            menuMessage += `✨ *Other Commands:*\n`;
-            menuMessage += `• *cart* - View your cart\n`;
-            menuMessage += `• *checkout* - Place order\n`;
-            menuMessage += `• *track* - Track your orders\n`;
-            menuMessage += `• *help* - Show all commands\n\n`;
-            
-            menuMessage += `💡 *Tip:* You can add multiple items before checking out!`;
-            
-            await sock.sendMessage(sender, { text: menuMessage });
+            await sock.sendMessage(sender, { text: msg });
             return;
         }
         
-        // ============ HELP COMMAND ============
-        if (text === "help" || text === "commands" || text === "?" || text === "menu help") {
+        // ============ HELP ============
+        if (text === "help" || text === "commands") {
             const helpMsg = `
-╔════════════════════════════════╗
-║     🤖 JAVAGOAT BOT COMMANDS    ║
-╚════════════════════════════════╝
+🤖 *JAVAGOAT BOT COMMANDS*
 
 🛒 *Ordering:*
-• *menu* - See all food items
-• *order [item]* - Add item to cart
-• *buy [item]* - Quick add to cart
-• *cart* - View your cart
+• *menu* - Show all food
+• *order [item]* - Add to cart
+• *cart* - View cart
 • *remove [item]* - Remove from cart
 • *clear cart* - Empty cart
 • *checkout* - Place order
 
-📦 *Order Tracking:*
-• *track* - See your recent orders
-• *track [ORDER_ID]* - Track specific order
-• *orders* - View order history
+📦 *Tracking:*
+• *track* - See your orders
+• *track [ID]* - Track order
 
 ℹ️ *General:*
-• *help* - Show this menu
+• *help* - This menu
 • *hi/hello* - Greeting
-• *contact* - Support info
 
 💡 *Examples:*
-• order biryani
-• track ORD_12345678
-• checkout
+order biryani
+track ORD_12345678
+checkout
 
-━━━━━━━━━━━━━━━━━━━━
-📞 *Support:* support@javagoat.com
-⏰ *Hours:* 10 AM - 10 PM
-
-_You'll receive automatic updates for all your orders!_`;
+_Type *menu* to get started!_`;
             
             await sock.sendMessage(sender, { text: helpMsg });
             return;
         }
         
-        // ============ ORDERS HISTORY ============
-        if (text === "orders" || text === "history" || text === "my orders") {
-            const userOrders = await getUserOrders(waNumber);
-            
-            if (userOrders.length === 0) {
-                await sock.sendMessage(sender, { 
-                    text: `📭 *No Order History*
-
-You haven't placed any orders yet.
-
-Type *menu* to see our delicious food and place your first order!` 
-                });
-                return;
-            }
-            
-            let historyMsg = `📜 *ORDER HISTORY* 📜\n\n`;
-            historyMsg += `Total Orders: ${userOrders.length}\n`;
-            historyMsg += `━━━━━━━━━━━━━━━━━━━━\n\n`;
-            
-            userOrders.forEach((order, idx) => {
-                const date = new Date(order.timestamp).toLocaleDateString();
-                historyMsg += `${idx + 1}. #${order.id.substring(0, 8)}\n`;
-                historyMsg += `   📅 ${date}\n`;
-                historyMsg += `   💰 ${formatPKR(order.total)}\n`;
-                historyMsg += `   📦 ${order.status}\n`;
-                historyMsg += `   ━━━━━━━━━━━━━━━\n`;
-            });
-            
-            historyMsg += `\n_To track any order, type: track ORDER_ID_\n`;
-            historyMsg += `_Example: track ${userOrders[0].id.substring(0, 8)}_`;
-            
-            await sock.sendMessage(sender, { text: historyMsg });
-            return;
-        }
-        
         // ============ GREETINGS ============
-        if (text.match(/^(hi|hello|hey|greetings|good morning|good afternoon|good evening|start|hello bot)$/i)) {
-            const greetingMsg = `
-╔════════════════════════════════╗
-║   👋 WELCOME TO JAVAGOAT! 🐐   ║
-╚════════════════════════════════╝
-
-Your favorite food delivery service is here!
-
-🍔 *Get Started:*
-1️⃣ Type *menu* to see our delicious food
-2️⃣ Type *order [dish]* to start ordering
-3️⃣ Type *checkout* when ready
-
-📦 *Track Orders:*
-• Type *track* to see your orders
-• Get automatic status updates
-
-💡 *Quick Examples:*
-• order biryani
-• cart
-• checkout
-
-_What would you like to order today?_`;
-            
-            await sock.sendMessage(sender, { text: greetingMsg });
+        if (text.match(/^(hi|hello|hey|start)$/i)) {
+            await sock.sendMessage(sender, { 
+                text: `👋 *Welcome to JavaGoat!*\n\nType *menu* to see our food, or *help* for all commands.\n\n*Quick start:*\n1. Type *menu*\n2. Type *order biryani*\n3. Type *checkout*` 
+            });
             return;
         }
         
-        // ============ CONTACT INFO ============
-        if (text.includes("contact") || text.includes("support") || text.includes("help desk")) {
-            const contactMsg = `
-📞 *Contact JavaGoat Support*
-
-💬 *WhatsApp Support:* +92 XXX XXXXXXX
-📧 *Email:* support@javagoat.com
-⏰ *Hours:* 10 AM - 10 PM (Daily)
-
-*Quick Links:*
-• Order issues: support@javagoat.com
-• Delivery tracking: track [order_id]
-• Feedback: feedback@javagoat.com
-
-For urgent issues, please call our support line.
-
-_We typically respond within 15 minutes!_`;
-            
-            await sock.sendMessage(sender, { text: contactMsg });
+        // ============ CONTACT ============
+        if (text.includes("contact") || text.includes("support")) {
+            await sock.sendMessage(sender, { 
+                text: `📞 *Contact Support*\n\nEmail: support@javagoat.com\n\nFor order issues, please share your order ID.` 
+            });
             return;
         }
         
-        // ============ DEFAULT RESPONSE ============
+        // ============ DEFAULT ============
         if (session.state === ORDER_STATES.IDLE) {
-            const defaultMsg = `
-🤔 *I didn't quite understand that.*
-
-📋 *Available Commands:*
-• *menu* - View our food menu
-• *order [food]* - Place an order
-• *track* - Track your orders
-• *cart* - View your cart
-• *help* - Show all commands
-
-💡 *Tip:* Type *help* for complete command list!
-
-_Example: order biryani_`;
-            
-            await sock.sendMessage(sender, { text: defaultMsg });
+            await sock.sendMessage(sender, { 
+                text: `🤔 I didn't understand.\n\nType *help* for commands or *menu* to see food.` 
+            });
         }
     });
 }
 
-startBot().catch(err => console.log("Error: " + err));
+// Handle errors
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+startBot().catch(err => console.log("Fatal Error: " + err));
