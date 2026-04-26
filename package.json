@@ -1,7 +1,7 @@
 {
-  "name": "javagoat-whatsapp-bot",
-  "version": "2.0.0",
-  "description": "Multi-WhatsApp Bot Manager for JavaGoat Restaurants",
+  "name": "javagoat-multi-bot",
+  "version": "3.0.0",
+  "description": "Multi-WhatsApp Bot Manager - Each Restaurant Gets Own Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
