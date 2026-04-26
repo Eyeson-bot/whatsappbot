@@ -30,7 +30,7 @@ function toNumber(value) {
     return isNaN(num) ? 0 : num;
 }
 
-// Format currency - FIXED
+// Format currency
 function formatPKR(amount) {
     const numAmount = toNumber(amount);
     return `₨${numAmount.toFixed(2)}`;
@@ -39,11 +39,11 @@ function formatPKR(amount) {
 // Get status emoji and message
 function getStatusInfo(status) {
     const statusMap = {
-        'Placed': { emoji: '📋', message: 'Order placed and confirmed', color: '🟡' },
-        'Preparing': { emoji: '🔪', message: 'Restaurant is preparing your food', color: '🔵' },
-        'Out for Delivery': { emoji: '🚚', message: 'Rider is on the way with your order', color: '🟣' },
-        'Delivered': { emoji: '✅', message: 'Order delivered successfully! Enjoy your meal!', color: '🟢' },
-        'Cancelled': { emoji: '❌', message: 'Order was cancelled', color: '🔴' }
+        'Placed': { emoji: '📋', message: '✅ Order placed and confirmed', color: '🟡' },
+        'Preparing': { emoji: '🔪', message: '👨‍🍳 Restaurant is preparing your food', color: '🔵' },
+        'Out for Delivery': { emoji: '🚚', message: '🏍️ Rider is on the way with your order', color: '🟣' },
+        'Delivered': { emoji: '✅', message: '🎉 Order delivered successfully! Enjoy your meal!', color: '🟢' },
+        'Cancelled': { emoji: '❌', message: '⚠️ Order was cancelled', color: '🔴' }
     };
     return statusMap[status] || { emoji: '📋', message: 'Order received', color: '⚪' };
 }
@@ -95,7 +95,11 @@ async function getUserOrders(waNumber) {
         
         const orders = [];
         for (const [key, value] of Object.entries(data)) {
-            if (value.userId === `whatsapp_${waNumber}` || value.userId === waNumber || value.phone === waNumber) {
+            // Match by userId or phone number
+            if (value.userId === `whatsapp_${waNumber}` || 
+                value.userId === waNumber || 
+                value.phone === waNumber ||
+                (value.userId && value.userId.includes(waNumber))) {
                 orders.push({ 
                     id: key, 
                     ...value,
@@ -111,19 +115,41 @@ async function getUserOrders(waNumber) {
     }
 }
 
-// Function to get order by ID
+// Function to get order by ID - FIXED
 async function getOrderById(orderId) {
     try {
-        const response = await fetch(`${FIREBASE_URL}/orders/${orderId}.json`);
-        const order = await response.json();
-        if (!order) return null;
+        // First try direct fetch
+        let response = await fetch(`${FIREBASE_URL}/orders/${orderId}.json`);
+        let order = await response.json();
         
-        return { 
-            id: orderId, 
-            ...order,
-            total: toNumber(order.total),
-            subtotal: toNumber(order.subtotal)
-        };
+        if (order) {
+            return { 
+                id: orderId, 
+                ...order,
+                total: toNumber(order.total),
+                subtotal: toNumber(order.subtotal)
+            };
+        }
+        
+        // If not found, search through all orders
+        response = await fetch(`${FIREBASE_URL}/orders.json`);
+        const allOrders = await response.json();
+        
+        if (allOrders) {
+            for (const [key, value] of Object.entries(allOrders)) {
+                // Match by full ID or partial ID (first 8 chars)
+                if (key === orderId || key.substring(0, 8) === orderId.substring(0, 8)) {
+                    return { 
+                        id: key, 
+                        ...value,
+                        total: toNumber(value.total),
+                        subtotal: toNumber(value.subtotal)
+                    };
+                }
+            }
+        }
+        
+        return null;
     } catch (error) {
         console.error("Failed to fetch order:", error);
         return null;
@@ -148,9 +174,10 @@ async function saveOrder(orderData) {
 
 // Watch order status and send updates
 async function watchOrderStatus(orderId, waNumber, sock) {
-    if (activeOrderWatchers[`${orderId}_${waNumber}`]) return;
+    const watcherKey = `${orderId}_${waNumber}`;
+    if (activeOrderWatchers[watcherKey]) return;
     
-    activeOrderWatchers[`${orderId}_${waNumber}`] = true;
+    activeOrderWatchers[watcherKey] = true;
     let lastStatus = '';
     
     const checkInterval = setInterval(async () => {
@@ -180,7 +207,7 @@ _Type *track ${orderId.substring(0, 8)}* for full details_`;
                 
                 if (order.status === 'Delivered' || order.status === 'Cancelled') {
                     clearInterval(checkInterval);
-                    delete activeOrderWatchers[`${orderId}_${waNumber}`];
+                    delete activeOrderWatchers[watcherKey];
                 }
             }
         } catch (error) {
@@ -223,8 +250,9 @@ async function startBot() {
         process.exit(1);
     }
 
-    console.log("🚀 Starting JavaGoat WhatsApp Bot v2.1...");
-    console.log(`📡 Firebase URL: ${FIREBASE_URL.substring(0, 30)}...`);
+    console.log("🚀 Starting JavaGoat WhatsApp Bot v3.0...");
+    console.log("📦 Multi-item orders supported!");
+    console.log("🔍 Order tracking by ID working!");
 
     const { state, saveCreds } = await useMultiFileAuthState('session_data');
     const { version } = await fetchLatestBaileysVersion();
@@ -234,7 +262,7 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ["JavaGoat", "Chrome", "2.1"]
+        browser: ["JavaGoat", "Chrome", "3.0"]
     });
 
     sock.ev.on('connection.update', (update) => {
@@ -252,6 +280,7 @@ async function startBot() {
             console.log('✅ JAVAGOAT BOT IS ONLINE!');
             console.log('📱 Bot is ready to take orders!');
             console.log('💡 Commands: menu, order [item], cart, checkout, track, help');
+            console.log('🍕 Multi-item orders: Just keep adding items before checkout!');
         }
         
         if (connection === 'close') {
@@ -288,7 +317,7 @@ async function startBot() {
         
         console.log(`📩 [${waNumber}]: ${text}`);
 
-        // ============ TRACK ORDER ============
+        // ============ TRACK ORDER - FIXED ============
         if (text === "track" || text === "my orders" || text === "orders") {
             const userOrders = await getUserOrders(waNumber);
             
@@ -300,60 +329,87 @@ async function startBot() {
             }
             
             let msg = `📋 *YOUR ORDERS* 📋\n\n`;
-        msg += `Total Orders: ${userOrders.length}\n━━━━━━━━━━━━━━━━\n\n`;
+            msg += `Total Orders: ${userOrders.length}\n━━━━━━━━━━━━━━━━\n\n`;
         
-        userOrders.slice(0, 5).forEach((order, idx) => {
-            const date = new Date(order.timestamp).toLocaleDateString();
-            const statusInfo = getStatusInfo(order.status);
-            msg += `${idx + 1}. *Order #${order.id.substring(0, 8)}*\n`;
-            msg += `   ${statusInfo.emoji} Status: ${order.status}\n`;
-            msg += `   📅 ${date}\n`;
-            msg += `   💰 ${formatPKR(order.total)}\n`;
-            msg += `   🍽️ Items: ${order.items ? order.items.length : 0}\n`;
-            msg += `━━━━━━━━━━━━━━━\n`;
-        });
+            userOrders.slice(0, 5).forEach((order, idx) => {
+                const date = new Date(order.timestamp).toLocaleDateString();
+                const statusInfo = getStatusInfo(order.status);
+                const shortId = order.id.substring(0, 8);
+                msg += `${idx + 1}. *Order #${shortId}*\n`;
+                msg += `   ${statusInfo.emoji} Status: ${order.status}\n`;
+                msg += `   📅 ${date}\n`;
+                msg += `   💰 ${formatPKR(order.total)}\n`;
+                msg += `   🍽️ Items: ${order.items ? order.items.length : 0}\n`;
+                msg += `   ━━━━━━━━━━━━━━━\n`;
+            });
         
-        msg += `\n_To track specific order: track ORDER_ID_\n`;
-        msg += `_Example: track ${userOrders[0].id.substring(0, 8)}_\n\n`;
-        msg += `💡 *Tip:* You'll receive automatic updates when your order status changes!`;
+            msg += `\n📝 *To track an order:*\n`;
+            msg += `Type: *track ORDER_ID*\n`;
+            msg += `Example: *track ${userOrders[0].id.substring(0, 8)}*\n\n`;
+            msg += `💡 *Tip:* You can use the full Order ID or just the first 8 characters!`;
         
             await sock.sendMessage(sender, { text: msg });
             return;
         }
         
+        // FIXED: Track by order ID - works with partial IDs
         if (text.startsWith("track ")) {
-            let orderId = text.replace("track", "").trim();
-            orderId = orderId.replace(/[^a-zA-Z0-9_-]/g, '');
+            let orderIdInput = text.replace("track", "").trim();
+            // Remove any special characters
+            orderIdInput = orderIdInput.replace(/[^a-zA-Z0-9_-]/g, '');
             
-            // Try to find full order ID
+            console.log(`🔍 Looking for order: ${orderIdInput}`);
+            
+            // Get all user orders first
             const userOrders = await getUserOrders(waNumber);
-            let fullOrderId = null;
             
-            // Try exact match first
-            let order = await getOrderById(orderId);
-            if (order) fullOrderId = orderId;
-            
-            // Try partial match
-            if (!fullOrderId) {
-                const matched = userOrders.find(o => o.id.substring(0, 8) === orderId || o.id === orderId);
-                if (matched) fullOrderId = matched.id;
-            }
-            
-            if (!fullOrderId) {
+            if (userOrders.length === 0) {
                 await sock.sendMessage(sender, { 
-                    text: `❌ *Order Not Found*\n\nOrder ID "${orderId}" not found.\n\nType *track* to see your orders.\n\n*Tip:* Copy the full Order ID from your order confirmation.` 
+                    text: `📭 *No Orders Found*\n\nYou haven't placed any orders yet.\n\nType *menu* to order something first!` 
                 });
                 return;
             }
             
-            const order = await getOrderById(fullOrderId);
-            if (!order) {
+            // Try to find matching order
+            let matchedOrder = null;
+            
+            // First try exact match
+            for (const order of userOrders) {
+                if (order.id === orderIdInput) {
+                    matchedOrder = order;
+                    break;
+                }
+            }
+            
+            // If not found, try partial match (first 8 characters)
+            if (!matchedOrder) {
+                for (const order of userOrders) {
+                    const shortId = order.id.substring(0, 8);
+                    if (shortId === orderIdInput || order.id.includes(orderIdInput)) {
+                        matchedOrder = order;
+                        break;
+                    }
+                }
+            }
+            
+            // If still not found, try searching all orders in Firebase
+            if (!matchedOrder) {
+                const allOrders = await getOrderById(orderIdInput);
+                if (allOrders && allOrders.phone === waNumber) {
+                    matchedOrder = allOrders;
+                }
+            }
+            
+            if (!matchedOrder) {
+                // Show available order IDs to help user
+                const availableIds = userOrders.slice(0, 3).map(o => `• #${o.id.substring(0, 8)}`).join('\n');
                 await sock.sendMessage(sender, { 
-                    text: `❌ *Order Not Found*\n\nCould not retrieve order details.` 
+                    text: `❌ *Order Not Found*\n\nCould not find order with ID: "${orderIdInput}"\n\n📋 *Your recent orders:*\n${availableIds}\n\n💡 *Tip:* Try using:\n• *track* - See all your orders\n• *track [order_id]* - Use the ID shown above` 
                 });
                 return;
             }
             
+            const order = matchedOrder;
             const statusInfo = getStatusInfo(order.status);
             const trackingVisual = createTrackingVisual(order.status);
             
@@ -389,176 +445,45 @@ _You'll receive automatic updates when status changes!_`;
             await sock.sendMessage(sender, { text: msg });
             
             // Start watching this order for updates
-            await watchOrderStatus(fullOrderId, sender, sock);
+            await watchOrderStatus(order.id, sender, sock);
             return;
         }
 
-        // ============ CHECKOUT FLOW ============
-        if (session.state === ORDER_STATES.CHECKOUT_NAME) {
-            session.tempData.name = text;
-            session.state = ORDER_STATES.CHECKOUT_PHONE;
-            await sock.sendMessage(sender, { 
-                text: `📱 *Phone Number*\n\nPlease provide your phone number for delivery:\n\nExample: 03XX 1234567` 
-            });
-            return;
-        }
-        
-        if (session.state === ORDER_STATES.CHECKOUT_PHONE) {
-            session.tempData.phone = text;
-            session.state = ORDER_STATES.CHECKOUT_ADDRESS;
-            await sock.sendMessage(sender, { 
-                text: `📍 *Delivery Address*\n\nPlease provide your complete delivery address:\n\nExample: House #123, Street 5, DHA, Karachi` 
-            });
-            return;
-        }
-        
-        if (session.state === ORDER_STATES.CHECKOUT_ADDRESS) {
-            session.tempData.address = text;
-            session.state = ORDER_STATES.CONFIRMING_ORDER;
-            
-            const cartSummary = getCartSummary(session.cart);
-            if (!cartSummary) {
-                await sock.sendMessage(sender, { text: `❌ Your cart is empty!` });
-                session.state = ORDER_STATES.IDLE;
-                return;
-            }
-            
-            const confirmMsg = `
-🛒 *ORDER SUMMARY*
-
-${cartSummary.itemsList}
-
-📊 *Bill Breakdown:*
-Subtotal: ${formatPKR(cartSummary.subtotal)}
-Tax (5%): ${formatPKR(cartSummary.tax)}
-Delivery: ${formatPKR(DELIVERY_FEE)}
-━━━━━━━━━━━━━━━━━━━━
-*Total: ${formatPKR(cartSummary.total)}*
-
-👤 *Delivery Details:*
-Name: ${session.tempData.name}
-Phone: ${session.tempData.phone}
-Address: ${session.tempData.address}
-
-━━━━━━━━━━━━━━━━━━━━
-*Reply with:*
-✅ *CONFIRM* - Place order
-❌ *CANCEL* - Cancel order`;
-            
-            await sock.sendMessage(sender, { text: confirmMsg });
-            return;
-        }
-        
-        if (session.state === ORDER_STATES.CONFIRMING_ORDER) {
-            if (text === "confirm") {
-                const cartSummary = getCartSummary(session.cart);
-                if (!cartSummary) {
-                    await sock.sendMessage(sender, { text: `❌ Your cart is empty!` });
-                    session.state = ORDER_STATES.IDLE;
-                    return;
-                }
-                
-                const orderItems = session.cart.map(item => ({
-                    id: item.id,
-                    name: item.name,
-                    price: toNumber(item.price),
-                    quantity: toNumber(item.quantity),
-                    img: item.imageUrl || ""
-                }));
-                
-                const newOrder = {
-                    userId: `whatsapp_${waNumber}`,
-                    userEmail: `${waNumber}@whatsapp.javagoat.com`,
-                    customerName: session.tempData.name,
-                    phone: session.tempData.phone,
-                    address: session.tempData.address,
-                    items: orderItems,
-                    subtotal: cartSummary.subtotal,
-                    tax: cartSummary.tax,
-                    deliveryFee: DELIVERY_FEE,
-                    total: cartSummary.total,
-                    status: "Placed",
-                    method: "Cash on Delivery",
-                    timestamp: new Date().toISOString(),
-                    source: "WhatsApp Bot"
-                };
-                
-                try {
-                    const savedOrderId = await saveOrder(newOrder);
-                    
-                    const trackingVisual = createTrackingVisual('Placed');
-                    
-                    await sock.sendMessage(sender, { 
-                        text: `✅ *ORDER CONFIRMED!* ✅
-
-*Order ID:* #${savedOrderId.substring(0, 8)}
-
-${cartSummary.itemsList}
-
-📊 *Total:* ${formatPKR(cartSummary.total)}
-
-${trackingVisual}
-*Status:* 📋 Placed
-
-🚚 *Delivery to:*
-${session.tempData.address}
-📞 ${session.tempData.phone}
-
-━━━━━━━━━━━━━━━━━━━━
-*Track your order:* track ${savedOrderId.substring(0, 8)}
-
-You'll receive automatic updates when your order status changes!
-
-Thank you for ordering from JavaGoat! 🍔` 
-                    });
-                    
-                    // Start tracking this order
-                    await watchOrderStatus(savedOrderId, sender, sock);
-                    
-                    // Reset session
-                    userSessions[sender] = {
-                        cart: [],
-                        state: ORDER_STATES.IDLE,
-                        tempData: {}
-                    };
-                    
-                } catch (error) {
-                    console.error("Order save error:", error);
-                    await sock.sendMessage(sender, { 
-                        text: `❌ *Order Failed*\n\nError: ${error.message}\nPlease try again.` 
-                    });
-                }
-                
-            } else if (text === "cancel") {
-                userSessions[sender] = {
-                    cart: [],
-                    state: ORDER_STATES.IDLE,
-                    tempData: {}
-                };
-                await sock.sendMessage(sender, { 
-                    text: `❌ *Order Cancelled*\n\nYour order has been cancelled. Type *menu* to start fresh.` 
-                });
-            } else {
-                await sock.sendMessage(sender, { 
-                    text: `Please reply with *CONFIRM* or *CANCEL*` 
-                });
-            }
-            return;
-        }
-
-        // ============ SHOW CART ============
-        if (text === "cart" || text === "view cart") {
+        // ============ SHOW CART (Multi-item support) ============
+        if (text === "cart" || text === "view cart" || text === "my cart") {
             if (session.cart.length === 0) {
                 await sock.sendMessage(sender, { 
-                    text: `🛒 *Cart is empty*\n\nAdd items using:\n*order [item name]*\n\nType *menu* to see our food!` 
+                    text: `🛒 *Your cart is empty*
+
+Add items using:
+• *order pizza*
+• *order biryani*
+• *order kabab*
+
+You can add MULTIPLE items before checkout!
+
+Type *menu* to see all items.` 
                 });
                 return;
             }
             
             const cartSummary = getCartSummary(session.cart);
-            await sock.sendMessage(sender, { 
-                text: `🛒 *YOUR CART* 🛒\n\n${cartSummary.itemsList}\n━━━━━━━━━━━━━━━━━━━━\n*Total: ${formatPKR(cartSummary.total)}*\n\nCommands:\n• *checkout* - Place order\n• *clear cart* - Empty cart\n• *remove [item]* - Remove item` 
-            });
+            let cartMsg = `🛒 *YOUR CART* 🛒\n\n`;
+            cartMsg += `${cartSummary.itemsList}\n`;
+            cartMsg += `━━━━━━━━━━━━━━━━━━━━\n`;
+            cartMsg += `📊 *Subtotal:* ${formatPKR(cartSummary.subtotal)}\n`;
+            cartMsg += `📊 *Tax (5%):* ${formatPKR(cartSummary.tax)}\n`;
+            cartMsg += `🚚 *Delivery:* ${formatPKR(DELIVERY_FEE)}\n`;
+            cartMsg += `━━━━━━━━━━━━━━━━━━━━\n`;
+            cartMsg += `💰 *TOTAL: ${formatPKR(cartSummary.total)}*\n\n`;
+            cartMsg += `📦 *Total Items:* ${cartSummary.itemCount}\n\n`;
+            cartMsg += `✨ *What now?*\n`;
+            cartMsg += `• *order [item]* - Add more items\n`;
+            cartMsg += `• *checkout* - Place order\n`;
+            cartMsg += `• *remove [item]* - Remove item\n`;
+            cartMsg += `• *clear cart* - Empty cart`;
+            
+            await sock.sendMessage(sender, { text: cartMsg });
             return;
         }
         
@@ -566,7 +491,7 @@ Thank you for ordering from JavaGoat! 🍔`
         if (text === "clear cart" || text === "empty cart") {
             session.cart = [];
             await sock.sendMessage(sender, { 
-                text: `🗑️ *Cart Cleared*\n\nType *menu* to browse our food.` 
+                text: `🗑️ *Cart Cleared*\n\nYour cart is now empty.\n\nType *menu* to browse our food and start fresh!` 
             });
             return;
         }
@@ -581,34 +506,242 @@ Thank you for ordering from JavaGoat! 🍔`
             if (itemIndex !== -1) {
                 const removed = session.cart[itemIndex];
                 session.cart.splice(itemIndex, 1);
+                const cartSummary = getCartSummary(session.cart);
                 await sock.sendMessage(sender, { 
-                    text: `🗑️ Removed *${removed.name}*\n\nType *cart* to see updated cart.` 
+                    text: `🗑️ *Removed* ${removed.name}
+
+📊 *New Cart Total:* ${cartSummary ? formatPKR(cartSummary.total) : '₨0'}
+
+Type *cart* to see updated cart.` 
                 });
             } else {
                 await sock.sendMessage(sender, { 
-                    text: `❌ Could not find "${itemToRemove}" in your cart.\n\nType *cart* to see what's inside.` 
+                    text: `❌ Could not find "${itemToRemove}" in your cart.
+
+Type *cart* to see what's inside.
+
+💡 *Tip:* Try *remove biryani* or *remove pizza*` 
                 });
             }
             return;
         }
         
         // ============ CHECKOUT ============
-        if (text === "checkout" || text === "place order") {
+        if (text === "checkout" || text === "place order" || text === "order now") {
             if (session.cart.length === 0) {
                 await sock.sendMessage(sender, { 
-                    text: `🛒 *Cart is empty*\n\nAdd items first using:\n*order [item name]*\n\nExample: *order biryani*` 
+                    text: `🛒 *Cart is empty*
+
+You need to add items first!
+
+1. Type *menu* to see items
+2. Type *order pizza* to add
+3. Add MULTIPLE items
+4. Then *checkout*
+
+Example: 
+• order biryani
+• order kabab  
+• order pizza
+• checkout` 
                 });
                 return;
             }
             
+            const cartSummary = getCartSummary(session.cart);
             session.state = ORDER_STATES.CHECKOUT_NAME;
             await sock.sendMessage(sender, { 
-                text: `👤 *Your Name*\n\nPlease provide your full name for delivery.\n\nExample: Muhammad Ali` 
+                text: `👤 *Your Name*
+
+You have ${cartSummary.itemCount} item(s) in cart.
+Total: ${formatPKR(cartSummary.total)}
+
+Please provide your full name for delivery.
+
+Example: Muhammad Ali` 
             });
             return;
         }
         
-        // ============ ORDER ITEM ============
+        // ============ CHECKOUT FLOW ============
+        if (session.state === ORDER_STATES.CHECKOUT_NAME) {
+            session.tempData.name = text;
+            session.state = ORDER_STATES.CHECKOUT_PHONE;
+            await sock.sendMessage(sender, { 
+                text: `📱 *Phone Number*
+
+Please provide your phone number for delivery coordination.
+
+Example: 03XX 1234567
+
+_We'll only use this for delivery updates_` 
+            });
+            return;
+        }
+        
+        if (session.state === ORDER_STATES.CHECKOUT_PHONE) {
+            session.tempData.phone = text;
+            session.state = ORDER_STATES.CHECKOUT_ADDRESS;
+            await sock.sendMessage(sender, { 
+                text: `📍 *Delivery Address*
+
+Please provide your complete delivery address:
+
+Example: House #123, Street 5, DHA Phase 2, Karachi
+
+_Include landmark for easy finding_` 
+            });
+            return;
+        }
+        
+        if (session.state === ORDER_STATES.CHECKOUT_ADDRESS) {
+            session.tempData.address = text;
+            session.state = ORDER_STATES.CONFIRMING_ORDER;
+            
+            const cartSummary = getCartSummary(session.cart);
+            const confirmMsg = `
+╔════════════════════════════════╗
+║        🛒 ORDER SUMMARY         ║
+╚════════════════════════════════╝
+
+${cartSummary.itemsList}
+
+📊 *Bill Breakdown:*
+Subtotal: ${formatPKR(cartSummary.subtotal)}
+Tax (5%): ${formatPKR(cartSummary.tax)}
+Delivery: ${formatPKR(DELIVERY_FEE)}
+━━━━━━━━━━━━━━━━━━━━
+*TOTAL: ${formatPKR(cartSummary.total)}*
+
+👤 *Delivery Details:*
+Name: ${session.tempData.name}
+Phone: ${session.tempData.phone}
+Address: ${session.tempData.address}
+
+━━━━━━━━━━━━━━━━━━━━
+*Reply with:*
+✅ *CONFIRM* - Place order
+❌ *CANCEL* - Cancel order
+
+_You can track your order after placing!_`;
+            
+            await sock.sendMessage(sender, { text: confirmMsg });
+            return;
+        }
+        
+        if (session.state === ORDER_STATES.CONFIRMING_ORDER) {
+            if (text === "confirm") {
+                const cartSummary = getCartSummary(session.cart);
+                
+                const orderItems = session.cart.map(item => ({
+                    id: item.id,
+                    name: item.name,
+                    price: toNumber(item.price),
+                    quantity: toNumber(item.quantity),
+                    img: item.imageUrl || ""
+                }));
+                
+                // Generate a readable order ID
+                const timestamp = Date.now();
+                const shortId = timestamp.toString().slice(-8);
+                
+                const newOrder = {
+                    orderId: `ORD_${shortId}`,
+                    userId: `whatsapp_${waNumber}`,
+                    userEmail: `${waNumber}@whatsapp.javagoat.com`,
+                    customerName: session.tempData.name,
+                    phone: session.tempData.phone,
+                    address: session.tempData.address,
+                    items: orderItems,
+                    subtotal: cartSummary.subtotal,
+                    tax: cartSummary.tax,
+                    deliveryFee: DELIVERY_FEE,
+                    total: cartSummary.total,
+                    status: "Placed",
+                    method: "Cash on Delivery",
+                    timestamp: new Date().toISOString(),
+                    timestampMs: timestamp,
+                    source: "WhatsApp Bot"
+                };
+                
+                try {
+                    const savedOrderId = await saveOrder(newOrder);
+                    const displayId = savedOrderId.substring(0, 8);
+                    
+                    const trackingVisual = createTrackingVisual('Placed');
+                    
+                    await sock.sendMessage(sender, { 
+                        text: `✅ *ORDER CONFIRMED!* ✅
+
+*Order ID:* #${displayId}
+
+${cartSummary.itemsList}
+
+📊 *Total Amount:* ${formatPKR(cartSummary.total)}
+
+${trackingVisual}
+*Status:* 📋 Placed
+
+🚚 *Delivery Details:*
+📍 ${session.tempData.address}
+📞 ${session.tempData.phone}
+
+━━━━━━━━━━━━━━━━━━━━
+*📦 To track your order:*
+Type: *track ${displayId}*
+
+You'll also receive automatic updates when your order status changes!
+
+Thank you for ordering from JavaGoat! 🍔
+
+_Type *menu* to order more items!_` 
+                    });
+                    
+                    // Start tracking this order
+                    await watchOrderStatus(savedOrderId, sender, sock);
+                    
+                    // Reset session but keep cart empty
+                    userSessions[sender] = {
+                        cart: [],
+                        state: ORDER_STATES.IDLE,
+                        tempData: {}
+                    };
+                    
+                } catch (error) {
+                    console.error("Order save error:", error);
+                    await sock.sendMessage(sender, { 
+                        text: `❌ *Order Failed*
+
+Error: ${error.message}
+
+Please try again or contact support.
+
+Type *menu* to start over.` 
+                    });
+                }
+                
+            } else if (text === "cancel") {
+                userSessions[sender] = {
+                    cart: [],
+                    state: ORDER_STATES.IDLE,
+                    tempData: {}
+                };
+                await sock.sendMessage(sender, { 
+                    text: `❌ *Order Cancelled*
+
+Your order has been cancelled.
+
+Type *cart* to see your items or *menu* to start fresh.` 
+                });
+            } else {
+                await sock.sendMessage(sender, { 
+                    text: `Please reply with *CONFIRM* to place your order or *CANCEL* to cancel.` 
+                });
+            }
+            return;
+        }
+
+        // ============ ADD MULTIPLE ITEMS TO CART ============
         if (text.startsWith("order ") || text.startsWith("buy ")) {
             const productRequested = text.replace(/^(order|buy) /, "").trim().toLowerCase();
             const currentMenu = await getMenuFromApp();
@@ -625,18 +758,30 @@ Thank you for ordering from JavaGoat! 🍔`
             );
             
             if (matchedItems.length === 0) {
+                // Show suggestions
+                const suggestions = currentMenu.slice(0, 5).map(i => i.name).join(', ');
                 await sock.sendMessage(sender, { 
-                    text: `❌ Sorry, couldn't find *${productRequested}*\n\nType *menu* to see all available items.\n\n💡 *Tip:* Try "biryani" instead of "chicken biryani"` 
+                    text: `❌ Sorry, couldn't find *${productRequested}*
+
+📋 *Available items:* ${suggestions}
+
+Type *menu* to see full menu.
+
+💡 *Tip:* Try "biryani" instead of "chicken biryani"` 
                 });
                 return;
             }
             
             if (matchedItems.length > 1) {
-                let optionsMsg = `🔍 *Multiple items found:*\n\n`;
+                let optionsMsg = `🔍 *Multiple items found for "${productRequested}"*
+
+Please reply with the number:
+
+`;
                 matchedItems.forEach((item, idx) => {
                     optionsMsg += `${idx + 1}. ${item.name} - ${formatPKR(item.price)}\n`;
                 });
-                optionsMsg += `\nReply with the number (1-${matchedItems.length}) to select.`;
+                optionsMsg += `\nOr type *cancel* to cancel.`;
                 
                 session.state = ORDER_STATES.BROWSING_MENU;
                 session.tempData.matchedItems = matchedItems;
@@ -648,7 +793,16 @@ Thank you for ordering from JavaGoat! 🍔`
             session.state = ORDER_STATES.ADDING_TO_CART;
             session.tempData.selectedItem = item;
             
-            const msg = `🛒 *${item.name}* - ${formatPKR(item.price)}\n\nReply with quantity (1-10):\n\nType *cancel* to cancel.`;
+            const currentCartCount = session.cart.length;
+            const cartHint = currentCartCount > 0 ? `\n\n📦 You already have ${currentCartCount} item(s) in cart.` : '';
+            
+            const msg = `🛒 *${item.name}* - ${formatPKR(item.price)}
+
+Reply with quantity (1-10):
+
+Type *cancel* to cancel.${cartHint}
+
+💡 *Tip:* You can add multiple items before checking out!`;
             
             if (item.imageUrl && item.imageUrl.startsWith('http')) {
                 await sock.sendMessage(sender, { image: { url: item.imageUrl }, caption: msg });
@@ -691,9 +845,25 @@ Thank you for ordering from JavaGoat! 🍔`
             session.state = ORDER_STATES.IDLE;
             session.tempData = {};
             
-            await sock.sendMessage(sender, { 
-                text: `✅ *Added to Cart!*\n\n${quantity}x ${item.name} added.\n\n📊 *Cart Total:* ${formatPKR(cartSummary.total)}\n📦 *Items:* ${cartSummary.itemCount}\n\nType *cart* to view or *checkout* to place order.` 
-            });
+            const continueMsg = `
+✅ *Added to Cart!*
+
+${quantity}x ${item.name} added.
+
+📊 *Cart Summary:*
+• Total Items: ${cartSummary.itemCount}
+• Subtotal: ${formatPKR(cartSummary.subtotal)}
+• Total with delivery: ${formatPKR(cartSummary.total)}
+
+✨ *What would you like to do next?*
+• *order [item]* - Add more items
+• *cart* - View full cart
+• *checkout* - Place order
+• *menu* - See all items
+
+💡 *You can add as many items as you want before checkout!*`;
+            
+            await sock.sendMessage(sender, { text: continueMsg });
             return;
         }
         
@@ -743,17 +913,22 @@ Thank you for ordering from JavaGoat! 🍔`
                 msg += `\n_And ${currentMenu.length - 15} more items..._\n`;
             }
             
-            msg += `\n📝 *How to order:*\n`;
-            msg += `• Type *order [dish name]*\n`;
-            msg += `• Example: *order biryani*\n\n`;
+            msg += `\n📝 *How to order multiple items:*\n`;
+            msg += `1. Type *order biryani*\n`;
+            msg += `2. Choose quantity\n`;
+            msg += `3. Type *order pizza* (add another)\n`;
+            msg += `4. Type *cart* to review\n`;
+            msg += `5. Type *checkout* when done\n\n`;
             
-            msg += `✨ *Other Commands:*\n`;
+            msg += `✨ *Commands:*\n`;
             msg += `• *cart* - View your cart\n`;
             msg += `• *checkout* - Place order\n`;
             msg += `• *track* - Track your orders\n`;
-            msg += `• *help* - Show all commands\n\n`;
+            msg += `• *remove [item]* - Remove from cart\n`;
+            msg += `• *clear cart* - Empty cart\n`;
+            msg += `• *help* - All commands\n\n`;
             
-            msg += `💡 *Tip:* You can add multiple items before checking out!`;
+            msg += `💡 *You can add MULTIPLE items before checking out!*`;
             
             await sock.sendMessage(sender, { text: msg });
             return;
@@ -766,16 +941,18 @@ Thank you for ordering from JavaGoat! 🍔`
 ║     🤖 JAVAGOAT BOT COMMANDS    ║
 ╚════════════════════════════════╝
 
-🛒 *Ordering:*
+🛒 *Ordering (Multi-item support):*
 • *menu* - See all food items
 • *order [item]* - Add to cart
+• *order pizza* - Example
+• *order biryani* - Example
 • *cart* - View your cart
 • *remove [item]* - Remove from cart
 • *clear cart* - Empty cart
 • *checkout* - Place order
 
 📦 *Order Tracking:*
-• *track* - See your orders
+• *track* - See all your orders
 • *track [ID]* - Track specific order
 
 ℹ️ *General:*
@@ -783,14 +960,29 @@ Thank you for ordering from JavaGoat! 🍔`
 • *hi/hello* - Greeting
 • *contact* - Support info
 
-💡 *Examples:*
-order biryani
-track ORD_12345678
-checkout
+💡 *How to order multiple items:*
+
+1️⃣ *Add first item:*
+   order biryani
+   → Choose quantity (e.g., 2)
+
+2️⃣ *Add second item:*
+   order pizza
+   → Choose quantity (e.g., 1)
+
+3️⃣ *Add more items:*
+   order kabab
+   → Choose quantity
+
+4️⃣ *Review cart:*
+   cart
+
+5️⃣ *Place order:*
+   checkout
 
 ━━━━━━━━━━━━━━━━━━━━
-📞 *Support:* support@javagoat.com
-⏰ *Hours:* 10 AM - 10 PM
+*Tracking example:*
+track ORD_12345678
 
 _You'll receive automatic updates for all your orders!_`;
             
@@ -805,20 +997,26 @@ _You'll receive automatic updates for all your orders!_`;
 
 Your favorite food delivery service is here!
 
-🍔 *Get Started:*
-1️⃣ Type *menu* to see our delicious food
-2️⃣ Type *order [dish]* to start ordering
-3️⃣ Type *checkout* when ready
+🍕 *How to order MULTIPLE items:*
 
-📦 *Track Orders:*
-• Type *track* to see your orders
-• Get automatic status updates
+1️⃣ *Add items one by one:*
+   • order biryani
+   • order pizza
+   • order kabab
+
+2️⃣ *Review cart:* cart
+
+3️⃣ *Place order:* checkout
+
+📦 *Track orders:* track
 
 💡 *Quick Example:*
-1. menu
-2. order biryani
-3. cart
-4. checkout
+> order biryani
+> 2
+> order pizza
+> 1
+> cart
+> checkout
 
 _What would you like to order today?_` 
             });
@@ -831,11 +1029,11 @@ _What would you like to order today?_`
                 text: `📞 *Contact JavaGoat Support*
 
 💬 *WhatsApp Support:* +92 329 5090465
-📧 *Email:* usmall3021@gmail.com
+📧 *Email:* support@javagoat.com
 ⏰ *Hours:* 10 AM - 10 PM (Daily)
 
 *Quick Links:*
-• Order issues: usmall3021@gmail.com
+• Order issues: support@javagoat.com
 • Delivery tracking: track [order_id]
 • Feedback: feedback@javagoat.com
 
@@ -851,14 +1049,15 @@ _We typically respond within 15 minutes!_`
 
 📋 *Available Commands:*
 • *menu* - View our food menu
-• *order [food]* - Place an order
-• *track* - Track your orders
-• *cart* - View your cart
-• *help* - Show all commands
+• *order [food]* - Add to cart
+• *cart* - View cart
+• *checkout* - Place order
+• *track* - Track orders
+• *help* - All commands
 
-💡 *Tip:* Type *help* for complete command list!
+💡 *Example:* order biryani
 
-_Example: order biryani_` 
+_You can add MULTIPLE items before checkout!_` 
             });
         }
     });
