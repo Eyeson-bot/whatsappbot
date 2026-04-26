@@ -1,9 +1,9 @@
 name: JavaGoat-WhatsApp-Bot
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger
   schedule:
-    - cron: '0 */5 * * *' 
+    - cron: '*/10 * * * *'  # Run every 10 minutes to keep bot alive
 
 jobs:
   build:
@@ -20,7 +20,8 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Start AI Bot
+      - name: Start WhatsApp Bot
         env:
           FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
         run: npm start
+        continue-on-error: true  # Don't fail on errors
