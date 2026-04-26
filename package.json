@@ -1,15 +1,18 @@
 {
   "name": "javagoat-whatsapp-bot",
   "version": "2.0.0",
-  "description": "WhatsApp Bot for JavaGoat with Full Order Tracking",
+  "description": "Multi-WhatsApp Bot Manager for JavaGoat Restaurants",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "6.6.0",
+    "@whiskeysockets/baileys": "^6.6.0",
     "qrcode-terminal": "^0.12.0",
     "pino": "^8.19.0",
     "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
