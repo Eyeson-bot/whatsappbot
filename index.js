@@ -2,19 +2,25 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLat
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const fetch = require('node-fetch');
+const fs = require('fs');
 
-// Firebase Configuration from GitHub Secrets
+// Firebase Configuration
 const FIREBASE_URL = process.env.FIREBASE_URL;
 
 // Bot Configuration
 const DELIVERY_FEE = 150;
 const TAX_RATE = 0.05;
 
-// Store active bot instances
+// Store all active bot instances
 const activeBots = new Map();
 const userSessions = new Map();
 
-// Helper function to fetch from Firebase
+// Create sessions directory if not exists
+if (!fs.existsSync('sessions')) {
+    fs.mkdirSync('sessions', { recursive: true });
+}
+
+// Helper Functions
 async function fetchFromFirebase(path) {
     try {
         const response = await fetch(`${FIREBASE_URL}/${path}.json`);
@@ -53,7 +59,7 @@ async function putToFirebase(path, data) {
     }
 }
 
-// Get restaurant menu (only for specific restaurant)
+// Get restaurant menu
 async function getRestaurantMenu(restaurantId) {
     const dishes = await fetchFromFirebase('dishes');
     if (!dishes) return [];
@@ -86,64 +92,74 @@ async function getUserOrders(waNumber, restaurantId) {
     return userOrders.sort((a, b) => b.timestamp - a.timestamp);
 }
 
-// Update bot status
-async function updateBotStatus(whatsappNumber, status, qrCode = null) {
+// Update bot status in Firebase
+async function updateBotStatus(restaurantId, status, qrCode = null) {
     const updates = {
         status: status,
-        lastUpdate: Date.now()
+        lastUpdate: Date.now(),
+        restaurantId: restaurantId
     };
     if (qrCode) updates.qrCode = qrCode;
-    await putToFirebase(`whatsapp_bots/${whatsappNumber}`, updates);
+    await putToFirebase(`whatsapp_bots/${restaurantId}`, updates);
 }
 
 function formatCurrency(amount) {
     return `₨${parseFloat(amount).toFixed(2)}`;
 }
 
-// Create bot instance for a restaurant
+// Create bot instance for a single restaurant
 async function createBotInstance(restaurantId, restaurantData) {
     const botNumber = restaurantData.whatsappNumber;
-    console.log(`\n${'='.repeat(50)}`);
-    console.log(`🤖 Starting bot for: ${restaurantData.name}`);
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`🤖 CREATING BOT FOR: ${restaurantData.name}`);
     console.log(`📞 WhatsApp Number: ${botNumber}`);
-    console.log(`${'='.repeat(50)}`);
+    console.log(`🆔 Restaurant ID: ${restaurantId}`);
+    console.log(`${'='.repeat(60)}`);
     
     try {
-        const { state, saveCreds } = await useMultiFileAuthState(`sessions/${restaurantId}`);
+        // Create separate session for each restaurant
+        const sessionPath = `sessions/${restaurantId}`;
+        const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
         const { version } = await fetchLatestBaileysVersion();
         
         const sock = makeWASocket({
             version,
             auth: state,
-            printQRInTerminal: false,
+            printQRInTerminal: true,
             logger: pino({ level: 'error' }),
             browser: [`JavaGoat_${restaurantData.name}`, "Chrome", "1.0"]
         });
         
-        await updateBotStatus(botNumber, 'connecting');
+        // Update status to connecting
+        await updateBotStatus(restaurantId, 'connecting');
         
+        // Connection handler
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
             
             if (qr) {
-                console.log(`\n📱 QR CODE FOR ${restaurantData.name}:`);
-                console.log(`Scan this QR with WhatsApp to connect ${restaurantData.name} bot`);
+                console.log(`\n📱 QR CODE FOR ${restaurantData.name.toUpperCase()}:`);
+                console.log(`🖨️ Scan this QR with WhatsApp number: ${botNumber}`);
                 console.log(`${'='.repeat(40)}`);
                 qrcode.generate(qr, { small: true });
-                console.log(`${'='.repeat(40)}\n`);
-                await updateBotStatus(botNumber, 'waiting_qr', String(qr));
+                console.log(`${'='.repeat(40)}`);
+                console.log(`💡 After scanning, ${restaurantData.name} bot will be online!\n`);
+                
+                // Store QR in Firebase for web display
+                await updateBotStatus(restaurantId, 'waiting_qr', String(qr));
             }
             
             if (connection === 'open') {
-                console.log(`✅ ${restaurantData.name} bot is ONLINE!`);
-                console.log(`📱 Customers can now order from ${restaurantData.name} on WhatsApp: ${botNumber}\n`);
-                await updateBotStatus(botNumber, 'online');
+                console.log(`\n✅ ${restaurantData.name} BOT IS ONLINE!`);
+                console.log(`📱 Customers can now order by messaging: ${botNumber}`);
+                console.log(`💬 Example: Send "menu" to see items\n`);
+                await updateBotStatus(restaurantId, 'online');
             }
             
             if (connection === 'close') {
                 const reason = lastDisconnect?.error?.output?.statusCode;
-                console.log(`❌ ${restaurantData.name} bot disconnected`);
-                await updateBotStatus(botNumber, 'offline');
+                console.log(`\n❌ ${restaurantData.name} bot disconnected`);
+                await updateBotStatus(restaurantId, 'offline');
                 
                 if (reason !== DisconnectReason.loggedOut) {
                     console.log(`🔄 Restarting bot for ${restaurantData.name} in 10 seconds...\n`);
@@ -152,15 +168,16 @@ async function createBotInstance(restaurantId, restaurantData) {
             }
         });
         
+        // Save credentials
         sock.ev.on('creds.update', saveCreds);
         
-        // Initialize user session storage
+        // Initialize user sessions for this restaurant
         if (!userSessions.has(restaurantId)) {
             userSessions.set(restaurantId, new Map());
         }
         const restaurantSessions = userSessions.get(restaurantId);
         
-        // Message handler
+        // Message handler for this restaurant
         sock.ev.on('messages.upsert', async (m) => {
             const msg = m.messages[0];
             if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
@@ -274,7 +291,7 @@ async function createBotInstance(restaurantId, restaurantData) {
                 const subtotal = session.cart.reduce((sum, i) => sum + (i.price * i.quantity), 0);
                 
                 await sock.sendMessage(sender, { 
-                    text: `✅ *Added to Cart!*\n\n${quantity}x ${item.name} added.\n\n📦 Cart has ${itemCount} item(s)\n💰 Total: ${formatCurrency(subtotal)}\n\nType *cart* to view or *checkout* to place order.` 
+                    text: `✅ *Added to Cart!*\n\n${quantity}x ${item.name} added.\n\n📦 Cart has ${itemCount} item(s)\n💰 Total: ${formatCurrency(subtotal)}\n\nType *cart* to view or *checkout* to place order.\n\n💡 You can add more items before checking out!` 
                 });
                 return;
             }
@@ -467,7 +484,9 @@ Address: ${session.tempData.address}
 You can track your order anytime with:
 *track ${orderId.substring(0,8)}*
 
-Thank you for ordering from ${restaurantData.name}! 🍔` 
+Thank you for ordering from ${restaurantData.name}! 🍔
+
+📞 For support, contact the restaurant directly.` 
                 });
                 
                 // Reset session
@@ -594,20 +613,7 @@ _What would you like to order today?_`
                 return;
             }
             
-            // ============ CONTACT ============
-            if (text.includes("contact") || text.includes("support")) {
-                await sock.sendMessage(sender, { 
-                    text: `📞 *${restaurantData.name} Support*
-
-📧 Email: support@javagoat.com
-⏰ Hours: 10 AM - 10 PM
-
-For order issues, please share your Order ID.` 
-                });
-                return;
-            }
-            
-            // Default response
+            // ============ DEFAULT RESPONSE ============
             await sock.sendMessage(sender, { 
                 text: `🤔 I didn't understand.\n\nType *help* for commands or *menu* to see our food from ${restaurantData.name}!\n\n💡 *Tip:* Type *order biryani* to start ordering!` 
             });
@@ -616,14 +622,15 @@ For order issues, please share your Order ID.`
         activeBots.set(restaurantId, sock);
         
     } catch (error) {
-        console.error(`Error creating bot for ${restaurantData.name}:`, error);
+        console.error(`❌ Error creating bot for ${restaurantData.name}:`, error);
     }
 }
 
-// Main function to start all bots
+// Main function to start all restaurant bots
 async function startAllBots() {
     console.log("\n" + "=".repeat(60));
-    console.log("🚀 STARTING JAVAGOAT MULTI-BOT MANAGER");
+    console.log("🚀 JAVAGOAT MULTI-BOT MANAGER");
+    console.log("📱 Each restaurant gets its own WhatsApp bot");
     console.log("=".repeat(60));
     console.log(`📡 Firebase URL: ${FIREBASE_URL}\n`);
     
@@ -640,26 +647,54 @@ async function startAllBots() {
         return;
     }
     
-    let botCount = 0;
+    // Count active restaurants with WhatsApp numbers
+    const activeRestaurants = [];
     for (const [restId, restData] of Object.entries(restaurants)) {
         if (restData.status === 'active' && restData.whatsappNumber) {
-            botCount++;
-            console.log(`\n📱 [${botCount}] Starting bot for: ${restData.name}`);
-            await createBotInstance(restId, restData);
-            // Add delay between bot starts
-            await new Promise(resolve => setTimeout(resolve, 5000));
+            activeRestaurants.push({ id: restId, ...restData });
+        }
+    }
+    
+    if (activeRestaurants.length === 0) {
+        console.log("❌ No active restaurants with WhatsApp numbers found.");
+        console.log("Please configure restaurants with WhatsApp numbers in admin panel.");
+        return;
+    }
+    
+    console.log(`📊 Found ${activeRestaurants.length} restaurant(s) to connect:\n`);
+    activeRestaurants.forEach((rest, idx) => {
+        console.log(`   ${idx + 1}. ${rest.name} - WhatsApp: ${rest.whatsappNumber}`);
+    });
+    console.log("\n" + "=".repeat(60));
+    
+    // Start bot for each restaurant
+    let botCount = 0;
+    for (const rest of activeRestaurants) {
+        botCount++;
+        console.log(`\n[${botCount}/${activeRestaurants.length}] Starting bot for ${rest.name}...`);
+        await createBotInstance(rest.id, rest);
+        
+        // Wait 10 seconds between bot creations to avoid rate limiting
+        if (botCount < activeRestaurants.length) {
+            console.log(`⏳ Waiting 10 seconds before starting next bot...`);
+            await new Promise(resolve => setTimeout(resolve, 10000));
         }
     }
     
     console.log("\n" + "=".repeat(60));
-    console.log(`✅ Bot Manager Running!`);
-    console.log(`📊 Active Bots: ${botCount}`);
+    console.log(`✅ ALL ${botCount} BOT(S) STARTED SUCCESSFULLY!`);
     console.log("=".repeat(60));
-    console.log("\n💡 Scan the QR codes above with WhatsApp to connect each bot");
-    console.log("📱 Each restaurant needs to be connected separately\n");
+    console.log("\n📱 SCAN THE QR CODES ABOVE:");
+    console.log("   - Each restaurant has its own QR code");
+    console.log("   - Scan each QR with its respective WhatsApp number");
+    console.log("   - Bots will come online after scanning\n");
+    console.log("💡 TIPS:");
+    console.log("   - Keep this terminal open");
+    console.log("   - Bots will auto-reconnect if disconnected");
+    console.log("   - Check admin panel for bot status\n");
 }
 
-// Keep the process alive
+// Handle process termination
 process.on('uncaughtException', (err) => {
     console.error('❌ Uncaught Exception:', err);
 });
