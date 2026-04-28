@@ -82,6 +82,9 @@ function formatCurrency(amount) {
     return `₨${parseFloat(amount).toFixed(2)}`;
 }
 
+// Store user sessions
+const userSessions = new Map();
+
 // Create bot for a specific restaurant with auto-reconnect
 async function createBotForRestaurant(restaurantId, restaurantData, isReconnect = false) {
     console.log(`\n${'='.repeat(60)}`);
@@ -101,7 +104,10 @@ async function createBotForRestaurant(restaurantId, restaurantData, isReconnect 
             browser: [`JavaGoat_${restaurantData.name}`, "Chrome", "1.0"],
             keepAliveIntervalMs: 30000,
             connectTimeoutMs: 60000,
-            generateHighQualityLinkPreview: false
+            generateHighQualityLinkPreview: false,
+            defaultQueryTimeoutMs: undefined,
+            markOnlineOnConnect: true,
+            syncFullHistory: false
         });
         
         let qrDisplayed = false;
@@ -158,6 +164,12 @@ async function createBotForRestaurant(restaurantId, restaurantData, isReconnect 
         
         sock.ev.on('creds.update', saveCreds);
         
+        // Initialize user sessions for this restaurant
+        if (!userSessions.has(restaurantId)) {
+            userSessions.set(restaurantId, new Map());
+        }
+        const restaurantSessions = userSessions.get(restaurantId);
+        
         // Message handler for this restaurant
         sock.ev.on('messages.upsert', async (m) => {
             const msg = m.messages[0];
@@ -166,15 +178,36 @@ async function createBotForRestaurant(restaurantId, restaurantData, isReconnect 
             
             const sender = msg.key.remoteJid;
             const waNumber = sender.split('@')[0];
-            const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim().toLowerCase();
+            
+            // Get message text properly
+            let text = '';
+            if (msg.message.conversation) {
+                text = msg.message.conversation;
+            } else if (msg.message.extendedTextMessage) {
+                text = msg.message.extendedTextMessage.text;
+            } else if (msg.message.imageMessage) {
+                text = '📷 Image received';
+            } else if (msg.message.videoMessage) {
+                text = '🎥 Video received';
+            } else {
+                text = 'Media received';
+            }
+            
+            text = text.trim().toLowerCase();
             
             console.log(`📩 [${restaurantData.name}] ${waNumber}: ${text}`);
+            
+            // Get or create user session
+            if (!restaurantSessions.has(waNumber)) {
+                restaurantSessions.set(waNumber, { step: 'IDLE', cart: [] });
+            }
+            let session = restaurantSessions.get(waNumber);
             
             // Get restaurant's menu only
             const menu = await getRestaurantMenu(restaurantId);
             
             // Handle Menu Command
-            if (text === "menu" || text === "food" || text === "dishes") {
+            if (text === "menu" || text === "food" || text === "dishes" || text === "menu " || text === "food ") {
                 if (menu.length === 0) {
                     await sock.sendMessage(sender, { 
                         text: `🍽️ *${restaurantData.name}*\n\nSorry, our menu is currently empty. Please check back later!` 
@@ -193,9 +226,6 @@ async function createBotForRestaurant(restaurantId, restaurantData, isReconnect 
                 menuMessage += `Type *order [dish name]*\n`;
                 menuMessage += `Example: *order ${menu[0]?.name || 'food'}*\n\n`;
                 menuMessage += `✨ *Commands:*\n`;
-                menuMessage += `• *cart* - View cart\n`;
-                menuMessage += `• *checkout* - Place order\n`;
-                menuMessage += `• *track* - Track orders\n`;
                 menuMessage += `• *help* - All commands`;
                 
                 await sock.sendMessage(sender, { text: menuMessage });
@@ -203,25 +233,48 @@ async function createBotForRestaurant(restaurantId, restaurantData, isReconnect 
             }
             
             // Handle Help Command
-            if (text === "help" || text === "commands" || text === "?") {
-                await sock.sendMessage(sender, { 
-                    text: `🤖 *${restaurantData.name} Bot Commands*\n\n🛒 *Ordering:*\n• *menu* - View our menu\n• *order [item]* - Add to cart\n• *cart* - View cart\n• *checkout* - Place order\n\n📦 *Tracking:*\n• *track* - See your orders\n\n💡 *Example:*\norder biryani\ncheckout\n\nType *menu* to get started!` 
-                });
+            if (text === "help" || text === "commands" || text === "?" || text === "help ") {
+                const helpMsg = `
+🤖 *${restaurantData.name} Bot Commands*
+
+🛒 *Ordering:*
+• *menu* - View our menu
+• *order [item]* - Place an order
+
+📦 *Tracking:*
+• *track* - See your orders
+
+💡 *Examples:*
+• menu
+• order biryani
+• track
+
+━━━━━━━━━━━━━━━━━━━━
+_Need help? Contact restaurant directly_
+`;
+                await sock.sendMessage(sender, { text: helpMsg });
                 return;
             }
             
-            // Handle Greetings
-            if (text.match(/^(hi|hello|hey|start|greetings)$/i)) {
+            // Handle Track Command
+            if (text === "track" || text === "track " || text === "my orders") {
                 await sock.sendMessage(sender, { 
-                    text: `👋 *Welcome to ${restaurantData.name}!* 🍔\n\n🍕 *Get Started:*\n1️⃣ Type *menu* to see our food\n2️⃣ Type *order [dish]* to order\n3️⃣ Type *checkout* when ready\n\n📦 *Track orders:* track\n\n_What would you like to order today?_` 
+                    text: `📭 *No Orders Found*\n\nYou haven't placed any orders with ${restaurantData.name} yet.\n\nType *menu* to see our food and place an order!` 
                 });
                 return;
             }
             
             // Handle Order Command
             if (text.startsWith("order ")) {
-                const productRequested = text.replace("order ", "").trim().toLowerCase();
-                const matchedItem = menu.find(item => item.name.toLowerCase().includes(productRequested));
+                const productRequested = text.replace("order ", "").trim();
+                if (!productRequested) {
+                    await sock.sendMessage(sender, { 
+                        text: `🛒 *How to order:*\n\nType *order [dish name]*\nExample: *order biryani*\n\nType *menu* to see all items.` 
+                    });
+                    return;
+                }
+                
+                const matchedItem = menu.find(item => item.name.toLowerCase().includes(productRequested.toLowerCase()));
                 
                 if (!matchedItem) {
                     await sock.sendMessage(sender, { 
@@ -230,31 +283,99 @@ async function createBotForRestaurant(restaurantId, restaurantData, isReconnect 
                     return;
                 }
                 
+                // Simple order response
                 await sock.sendMessage(sender, { 
-                    text: `🛒 *${matchedItem.name}* - ${formatCurrency(matchedItem.price)}\n\nPlease reply with your delivery address to place order.\n\nType *cancel* to cancel.` 
+                    text: `🛒 *Order Received!*\n\nItem: ${matchedItem.name}\nPrice: ${formatCurrency(matchedItem.price)}\nRestaurant: ${restaurantData.name}\n\nPlease reply with your delivery address to confirm your order.\n\nType *cancel* to cancel.` 
+                });
+                session.step = 'WAITING_ADDRESS';
+                session.selectedItem = matchedItem;
+                restaurantSessions.set(waNumber, session);
+                return;
+            }
+            
+            // Handle Address input for order
+            if (session.step === 'WAITING_ADDRESS') {
+                if (text === "cancel") {
+                    session.step = 'IDLE';
+                    session.selectedItem = null;
+                    restaurantSessions.set(waNumber, session);
+                    await sock.sendMessage(sender, { text: `❌ Order cancelled.` });
+                    return;
+                }
+                
+                // Create order object
+                const order = {
+                    restaurantId: restaurantId,
+                    restaurantName: restaurantData.name,
+                    customerWaNumber: waNumber,
+                    customerName: waNumber,
+                    phone: waNumber,
+                    address: text,
+                    items: [{
+                        id: session.selectedItem.id,
+                        name: session.selectedItem.name,
+                        price: session.selectedItem.price,
+                        quantity: 1
+                    }],
+                    subtotal: session.selectedItem.price,
+                    tax: session.selectedItem.price * 0.05,
+                    deliveryFee: DELIVERY_FEE,
+                    total: session.selectedItem.price + (session.selectedItem.price * 0.05) + DELIVERY_FEE,
+                    status: "Placed",
+                    method: "Cash on Delivery",
+                    timestamp: Date.now(),
+                    source: `WhatsApp Bot - ${restaurantData.name}`
+                };
+                
+                // Save order to Firebase
+                const orderRef = await fetch(`${FIREBASE_URL}/orders.json`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(order)
+                });
+                const orderResult = await orderRef.json();
+                const orderId = orderResult.name;
+                
+                await sock.sendMessage(sender, { 
+                    text: `✅ *ORDER CONFIRMED!* ✅
+
+*Order ID:* #${orderId.substring(0,8)}
+*Restaurant:* ${restaurantData.name}
+*Item:* ${session.selectedItem.name}
+*Total:* ${formatCurrency(order.total)}
+
+You can track your order anytime with:
+*track ${orderId.substring(0,8)}*
+
+Thank you for ordering from ${restaurantData.name}! 🍔
+
+📞 For support, contact the restaurant directly.` 
+                });
+                
+                session.step = 'IDLE';
+                session.selectedItem = null;
+                restaurantSessions.set(waNumber, session);
+                return;
+            }
+            
+            // Handle Greetings - FIXED: This will respond to "hi", "hello", etc.
+            if (text === "hi" || text === "hello" || text === "hey" || text === "start" || text === "greetings") {
+                await sock.sendMessage(sender, { 
+                    text: `👋 *Welcome to ${restaurantData.name}!* 🍔
+
+🍕 *Get Started:*
+1️⃣ Type *menu* to see our food
+2️⃣ Type *order [dish]* to place order
+3️⃣ Type *help* for all commands
+
+_What would you like to order today?_` 
                 });
                 return;
             }
             
-            // Handle Cart command
-            if (text === "cart") {
-                await sock.sendMessage(sender, { 
-                    text: `🛒 *Your cart is empty*\n\nAdd items using *order [dish name]*\nType *menu* to see our food!` 
-                });
-                return;
-            }
-            
-            // Handle Track command
-            if (text === "track") {
-                await sock.sendMessage(sender, { 
-                    text: `📭 *No Orders Found*\n\nYou haven't placed any orders with ${restaurantData.name} yet.\n\nType *menu* to see our food!` 
-                });
-                return;
-            }
-            
-            // Default response
+            // Handle invalid commands - Send help
             await sock.sendMessage(sender, { 
-                text: `🤔 I didn't understand.\n\nType *help* for commands or *menu* to see our food from ${restaurantData.name}!\n\n💡 *Tip:* Type *menu* to get started!` 
+                text: `🤔 I didn't understand "*${text}*".\n\nType *help* for commands or *menu* to see our food from ${restaurantData.name}!\n\n💡 *Tip:* Type *menu* to get started!` 
             });
         });
         
@@ -286,7 +407,7 @@ async function createBotForRestaurant(restaurantId, restaurantData, isReconnect 
 // Start all restaurant bots
 async function startAllBots() {
     console.log("\n" + "=".repeat(60));
-    console.log("🚀 JAVAGOAT MULTI-BOT MANAGER v5.0");
+    console.log("🚀 JAVAGOAT MULTI-BOT MANAGER v6.0");
     console.log("🔋 Auto-Reconnect & Session Persistence Enabled");
     console.log("=".repeat(60));
     console.log(`📡 Firebase URL: ${FIREBASE_URL ? FIREBASE_URL.substring(0, 50) + '...' : 'NOT SET'}\n`);
@@ -338,10 +459,11 @@ async function startAllBots() {
     console.log("🔄 Auto-reconnect enabled");
     console.log("💾 Sessions are saved between restarts");
     console.log("=".repeat(60));
-    console.log("\n💡 NEXT STEPS:");
-    console.log("   1. Scan the QR codes above with their respective WhatsApp numbers");
-    console.log("   2. Bots will stay connected 24/7");
-    console.log("   3. If disconnected, bots will auto-reconnect\n");
+    console.log("\n💡 TEST YOUR BOT:");
+    console.log("   1. Open WhatsApp on your phone");
+    console.log("   2. Message your restaurant's WhatsApp number");
+    console.log("   3. Type 'hi' or 'menu' to test");
+    console.log("   4. Bot should respond immediately\n");
     
     // Keep process alive
     setInterval(() => {
