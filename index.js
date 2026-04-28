@@ -3,54 +3,24 @@ const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const fetch = require('node-fetch');
 const fs = require('fs');
-const express = require('express');
-const cron = require('node-cron');
 
-// ============ CONFIGURATION ============
+// Firebase Configuration
 const FIREBASE_URL = process.env.FIREBASE_URL;
-const PORT = process.env.PORT || 3000;
-const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const RECONNECT_DELAY = 5000; // 5 seconds
 
-// Store active bot instances
+// Store all active bot instances
 const activeBots = new Map();
-const botSessions = new Map();
 const reconnectAttempts = new Map();
 
-// ============ EXPRESS SERVER FOR KEEP-ALIVE ============
-const app = express();
-app.use(express.json());
+// Configuration
+const DELIVERY_FEE = 150;
+const TAX_RATE = 0.05;
 
-app.get('/', (req, res) => {
-    res.json({
-        status: 'online',
-        bots: activeBots.size,
-        timestamp: Date.now(),
-        uptime: process.uptime()
-    });
-});
+// Create sessions directory if not exists
+if (!fs.existsSync('sessions')) {
+    fs.mkdirSync('sessions', { recursive: true });
+}
 
-app.get('/health', (req, res) => {
-    res.json({ status: 'healthy', bots: activeBots.size });
-});
-
-app.get('/bots', (req, res) => {
-    const botInfo = [];
-    for (const [id, bot] of activeBots) {
-        botInfo.push({
-            restaurantId: id,
-            status: bot.status || 'unknown',
-            connected: bot.connected || false
-        });
-    }
-    res.json(botInfo);
-});
-
-app.listen(PORT, () => {
-    console.log(`🔋 Keep-alive server running on port ${PORT}`);
-});
-
-// ============ HELPER FUNCTIONS ============
+// Helper function to fetch from Firebase
 async function fetchFromFirebase(path) {
     try {
         const response = await fetch(`${FIREBASE_URL}/${path}.json`);
@@ -75,6 +45,7 @@ async function putToFirebase(path, data) {
     }
 }
 
+// Update bot status
 async function updateBotStatus(restaurantId, status, message = '') {
     await putToFirebase(`whatsapp_bots/${restaurantId}`, {
         status: status,
@@ -84,124 +55,42 @@ async function updateBotStatus(restaurantId, status, message = '') {
     });
 }
 
+// Store QR codes in database for admin to view
+async function storeQRCode(restaurantId, qrData) {
+    await putToFirebase(`whatsapp_bots/${restaurantId}`, {
+        qrCode: qrData,
+        qrGeneratedAt: Date.now(),
+        status: 'waiting_qr'
+    });
+}
+
+// Get restaurant menu
+async function getRestaurantMenu(restaurantId) {
+    const dishes = await fetchFromFirebase('dishes');
+    if (!dishes) return [];
+    
+    const menu = [];
+    for (const [key, value] of Object.entries(dishes)) {
+        if (value.restaurantId === restaurantId) {
+            menu.push({ id: key, ...value });
+        }
+    }
+    return menu;
+}
+
 function formatCurrency(amount) {
     return `₨${parseFloat(amount).toFixed(2)}`;
 }
 
-// ============ SESSION MANAGEMENT ============
-function saveSession(restaurantId, sessionData) {
-    const sessionPath = `./sessions/${restaurantId}.json`;
-    try {
-        fs.writeFileSync(sessionPath, JSON.stringify(sessionData));
-        console.log(`💾 Session saved for ${restaurantId}`);
-        return true;
-    } catch (error) {
-        console.error(`Failed to save session for ${restaurantId}:`, error);
-        return false;
-    }
-}
-
-function loadSession(restaurantId) {
-    const sessionPath = `./sessions/${restaurantId}.json`;
-    try {
-        if (fs.existsSync(sessionPath)) {
-            const data = fs.readFileSync(sessionPath, 'utf8');
-            return JSON.parse(data);
-        }
-    } catch (error) {
-        console.error(`Failed to load session for ${restaurantId}:`, error);
-    }
-    return null;
-}
-
-// ============ KEEP ALIVE FUNCTION ============
-async function keepAlive(restaurantId, sock) {
-    setInterval(async () => {
-        try {
-            if (sock && sock.user) {
-                // Send a keep-alive ping
-                console.log(`💓 Keep-alive ping for bot ${restaurantId}`);
-                await updateBotStatus(restaurantId, 'online', 'Bot is active');
-            }
-        } catch (error) {
-            console.log(`⚠️ Keep-alive failed for ${restaurantId}:`, error.message);
-        }
-    }, KEEP_ALIVE_INTERVAL);
-}
-
-// ============ MESSAGE HANDLER ============
-async function handleMessage(sock, sender, text, restaurantId, restaurantData) {
-    const waNumber = sender.split('@')[0];
-    console.log(`📩 [${restaurantData.name}] ${waNumber}: ${text}`);
-    
-    // Get user session (simplified for demo)
-    let session = botSessions.get(`${restaurantId}_${waNumber}`) || { cart: [], step: 'IDLE' };
-    
-    // Get restaurant menu
-    const dishes = await fetchFromFirebase('dishes');
-    const menu = [];
-    if (dishes) {
-        for (const [key, value] of Object.entries(dishes)) {
-            if (value.restaurantId === restaurantId) {
-                menu.push({ id: key, ...value });
-            }
-        }
-    }
-    
-    // Menu command
-    if (text === "menu" || text === "food") {
-        if (menu.length === 0) {
-            await sock.sendMessage(sender, { text: `🍽️ *${restaurantData.name}*\n\nSorry, menu is currently empty.` });
-            return;
-        }
-        
-        let menuMessage = `🍔 *${restaurantData.name.toUpperCase()} MENU* 🍕\n\n`;
-        menu.forEach((item, idx) => {
-            menuMessage += `${idx + 1}. *${item.name}* - ${formatCurrency(item.price)}\n`;
-        });
-        menuMessage += `\n📝 Type *order [dish name]* to order\n💡 Type *help* for all commands`;
-        
-        await sock.sendMessage(sender, { text: menuMessage });
-        return;
-    }
-    
-    // Help command
-    if (text === "help") {
-        await sock.sendMessage(sender, { 
-            text: `🤖 *${restaurantData.name} Bot Commands*\n\n• *menu* - View menu\n• *order [item]* - Place order\n• *cart* - View cart\n• *track* - Track orders\n• *help* - This menu` 
-        });
-        return;
-    }
-    
-    // Greeting
-    if (text.match(/^(hi|hello|hey|start)$/i)) {
-        await sock.sendMessage(sender, { 
-            text: `👋 *Welcome to ${restaurantData.name}!*\n\nType *menu* to see our delicious food!\nType *help* for all commands.` 
-        });
-        return;
-    }
-    
-    // Default response
-    await sock.sendMessage(sender, { 
-        text: `🤔 Type *help* for commands or *menu* to see our food from ${restaurantData.name}!` 
-    });
-}
-
-// ============ CREATE BOT WITH AUTO-RECONNECT ============
-async function createBotInstance(restaurantId, restaurantData, isReconnect = false) {
-    const botNumber = restaurantData.whatsappNumber;
+// Create bot for a specific restaurant with auto-reconnect
+async function createBotForRestaurant(restaurantId, restaurantData, isReconnect = false) {
     console.log(`\n${'='.repeat(60)}`);
     console.log(`${isReconnect ? '🔄 RECONNECTING' : '🤖 CREATING'} BOT FOR: ${restaurantData.name}`);
-    console.log(`📞 WhatsApp Number: ${botNumber}`);
+    console.log(`📞 WhatsApp Number: ${restaurantData.whatsappNumber}`);
     console.log(`${'='.repeat(60)}`);
     
     try {
-        const sessionPath = `sessions/${restaurantId}`;
-        if (!fs.existsSync(sessionPath)) {
-            fs.mkdirSync(sessionPath, { recursive: true });
-        }
-        
-        const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+        const { state, saveCreds } = await useMultiFileAuthState(`sessions/${restaurantId}`);
         const { version } = await fetchLatestBaileysVersion();
         
         const sock = makeWASocket({
@@ -210,7 +99,7 @@ async function createBotInstance(restaurantId, restaurantData, isReconnect = fal
             printQRInTerminal: true,
             logger: pino({ level: 'error' }),
             browser: [`JavaGoat_${restaurantData.name}`, "Chrome", "1.0"],
-            // Increase timeouts for better stability
+            // Important: Keep connection alive
             keepAliveIntervalMs: 30000,
             connectTimeoutMs: 60000,
             generateHighQualityLinkPreview: false
@@ -223,31 +112,29 @@ async function createBotInstance(restaurantId, restaurantData, isReconnect = fal
             
             if (qr && !qrDisplayed) {
                 qrDisplayed = true;
-                console.log(`\n📱 QR CODE FOR ${restaurantData.name}:`);
-                console.log(`🖨️ Scan this QR with WhatsApp number: ${botNumber}`);
+                console.log(`\n📱 QR CODE FOR ${restaurantData.name.toUpperCase()}:`);
+                console.log(`🖨️ Scan this QR with WhatsApp number: ${restaurantData.whatsappNumber}`);
                 console.log(`${'='.repeat(40)}`);
                 qrcode.generate(qr, { small: true });
-                console.log(`${'='.repeat(40)}`);
-                console.log(`💡 After scanning, bot will connect automatically!\n`);
+                console.log(`${'='.repeat(40)}\n`);
+                
+                // Store QR in Firebase for web display
+                await storeQRCode(restaurantId, qr);
                 await updateBotStatus(restaurantId, 'waiting_qr', 'Scan QR code with WhatsApp');
             }
             
             if (connection === 'open') {
                 qrDisplayed = false;
                 console.log(`\n✅ ${restaurantData.name} BOT IS ONLINE!`);
-                console.log(`📱 Customers can now order by messaging: ${botNumber}`);
+                console.log(`📱 Customers can now order by messaging: ${restaurantData.whatsappNumber}`);
                 await updateBotStatus(restaurantId, 'online', 'Bot is active and taking orders');
-                
                 // Reset reconnect attempts on successful connection
                 reconnectAttempts.set(restaurantId, 0);
-                
-                // Start keep-alive
-                await keepAlive(restaurantId, sock);
             }
             
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
-                console.log(`\n❌ ${restaurantData.name} bot disconnected. Status: ${statusCode}`);
+                console.log(`\n❌ ${restaurantData.name} bot disconnected. Code: ${statusCode}`);
                 
                 const attempts = (reconnectAttempts.get(restaurantId) || 0) + 1;
                 reconnectAttempts.set(restaurantId, attempts);
@@ -255,19 +142,17 @@ async function createBotInstance(restaurantId, restaurantData, isReconnect = fal
                 await updateBotStatus(restaurantId, 'reconnecting', `Reconnect attempt ${attempts}`);
                 
                 if (statusCode !== DisconnectReason.loggedOut) {
-                    const delay = Math.min(RECONNECT_DELAY * attempts, 60000);
+                    const delay = Math.min(5000 * attempts, 60000);
                     console.log(`🔄 Reconnecting in ${delay/1000} seconds... (Attempt ${attempts})`);
-                    
                     setTimeout(() => {
-                        createBotInstance(restaurantId, restaurantData, true);
+                        createBotForRestaurant(restaurantId, restaurantData, true);
                     }, delay);
                 } else {
                     console.log(`⚠️ Bot logged out. Please scan QR code again.`);
                     await updateBotStatus(restaurantId, 'logged_out', 'Need to re-scan QR code');
-                    
                     // Force QR regeneration after logout
                     setTimeout(() => {
-                        createBotInstance(restaurantId, restaurantData, true);
+                        createBotForRestaurant(restaurantId, restaurantData, true);
                     }, 10000);
                 }
             }
@@ -275,19 +160,118 @@ async function createBotInstance(restaurantId, restaurantData, isReconnect = fal
         
         sock.ev.on('creds.update', saveCreds);
         
-        // Message handler
+        // Message handler for this restaurant
         sock.ev.on('messages.upsert', async (m) => {
             const msg = m.messages[0];
             if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
             if (msg.key.fromMe) return;
             
             const sender = msg.key.remoteJid;
+            const waNumber = sender.split('@')[0];
             const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim().toLowerCase();
             
-            await handleMessage(sock, sender, text, restaurantId, restaurantData);
+            console.log(`📩 [${restaurantData.name}] ${waNumber}: ${text}`);
+            
+            // Get restaurant's menu only
+            const menu = await getRestaurantMenu(restaurantId);
+            
+            // Handle Menu Command
+            if (text === "menu" || text === "food" || text === "dishes") {
+                if (menu.length === 0) {
+                    await sock.sendMessage(sender, { 
+                        text: `🍽️ *${restaurantData.name}*\n\nSorry, our menu is currently empty. Please check back later!` 
+                    });
+                    return;
+                }
+                
+                let menuMessage = `🍔 *${restaurantData.name.toUpperCase()} MENU* 🍕\n\n`;
+                menuMessage += `━━━━━━━━━━━━━━━━━━━━\n`;
+                menu.slice(0, 15).forEach((item, idx) => {
+                    menuMessage += `${idx + 1}. *${item.name}*\n`;
+                    menuMessage += `   💰 ${formatCurrency(item.price)}\n`;
+                    menuMessage += `   ━━━━━━━━━━━━━━━\n`;
+                });
+                menuMessage += `\n📝 *How to order:*\n`;
+                menuMessage += `Type *order [dish name]*\n`;
+                menuMessage += `Example: *order ${menu[0]?.name || 'food'}*\n\n`;
+                menuMessage += `✨ *Commands:*\n`;
+                menuMessage += `• *cart* - View cart\n`;
+                menuMessage += `• *checkout* - Place order\n`;
+                menuMessage += `• *track* - Track orders\n`;
+                menuMessage += `• *help* - All commands`;
+                
+                await sock.sendMessage(sender, { text: menuMessage });
+                return;
+            }
+            
+            // Handle Help Command
+            if (text === "help" || text === "commands" || text === "?") {
+                await sock.sendMessage(sender, { 
+                    text: `🤖 *${restaurantData.name} Bot Commands*\n\n🛒 *Ordering:*\n• *menu* - View our menu\n• *order [item]* - Add to cart\n• *cart* - View cart\n• *checkout* - Place order\n\n📦 *Tracking:*\n• *track* - See your orders\n\n💡 *Example:*\norder biryani\ncheckout\n\nType *menu* to get started!` 
+                });
+                return;
+            }
+            
+            // Handle Greetings
+            if (text.match(/^(hi|hello|hey|start|greetings)$/i)) {
+                await sock.sendMessage(sender, { 
+                    text: `👋 *Welcome to ${restaurantData.name}!* 🍔\n\n🍕 *Get Started:*\n1️⃣ Type *menu* to see our food\n2️⃣ Type *order [dish]* to order\n3️⃣ Type *checkout* when ready\n\n📦 *Track orders:* track\n\n_What would you like to order today?_` 
+                });
+                return;
+            }
+            
+            // Handle Order Command (simplified)
+            if (text.startsWith("order ")) {
+                const productRequested = text.replace("order ", "").trim().toLowerCase();
+                const matchedItem = menu.find(item => item.name.toLowerCase().includes(productRequested));
+                
+                if (!matchedItem) {
+                    await sock.sendMessage(sender, { 
+                        text: `❌ Sorry, couldn't find *${productRequested}* in *${restaurantData.name}* menu.\n\nType *menu* to see all available items.` 
+                    });
+                    return;
+                }
+                
+                await sock.sendMessage(sender, { 
+                    text: `🛒 *${matchedItem.name}* - ${formatCurrency(matchedItem.price)}\n\nPlease reply with your delivery address to place order.\n\nType *cancel* to cancel.` 
+                });
+                return;
+            }
+            
+            // Handle Cart command
+            if (text === "cart") {
+                await sock.sendMessage(sender, { 
+                    text: `🛒 *Your cart is empty*\n\nAdd items using *order [dish name]*\nType *menu* to see our food!` 
+                });
+                return;
+            }
+            
+            // Handle Track command
+            if (text === "track") {
+                await sock.sendMessage(sender, { 
+                    text: `📭 *No Orders Found*\n\nYou haven't placed any orders with ${restaurantData.name} yet.\n\nType *menu* to see our food!` 
+                });
+                return;
+            }
+            
+            // Default response
+            await sock.sendMessage(sender, { 
+                text: `🤔 I didn't understand.\n\nType *help* for commands or *menu* to see our food from ${restaurantData.name}!\n\n💡 *Tip:* Type *menu* to get started!` 
+            });
         });
         
         activeBots.set(restaurantId, sock);
+        
+        // Send heartbeat every 30 seconds to keep connection alive
+        const heartbeat = setInterval(async () => {
+            if (sock && sock.user) {
+                console.log(`💓 [${restaurantData.name}] Heartbeat - ${new Date().toISOString()}`);
+                await updateBotStatus(restaurantId, 'online', 'Bot is active');
+            }
+        }, 30000);
+        
+        // Store heartbeat interval to clear on disconnect
+        sock.heartbeat = heartbeat;
         
         return sock;
         
@@ -296,46 +280,18 @@ async function createBotInstance(restaurantId, restaurantData, isReconnect = fal
         
         // Schedule reconnect on error
         setTimeout(() => {
-            createBotInstance(restaurantId, restaurantData, true);
-        }, RECONNECT_DELAY);
+            createBotForRestaurant(restaurantId, restaurantData, true);
+        }, 15000);
         
         return null;
     }
 }
 
-// ============ SCHEDULED TASKS ============
-// Health check every 5 minutes
-cron.schedule('*/5 * * * *', async () => {
-    console.log('🩺 Running health check...');
-    
-    for (const [restaurantId, sock] of activeBots) {
-        try {
-            if (!sock || !sock.user) {
-                console.log(`⚠️ Bot ${restaurantId} appears disconnected, attempting reconnect...`);
-                const restaurantData = await fetchFromFirebase(`restaurants/${restaurantId}`);
-                if (restaurantData && restaurantData.whatsappNumber) {
-                    createBotInstance(restaurantId, restaurantData, true);
-                }
-            } else {
-                console.log(`✅ Bot ${restaurantId} is healthy`);
-            }
-        } catch (error) {
-            console.log(`❌ Health check failed for ${restaurantId}:`, error.message);
-        }
-    }
-});
-
-// Daily session backup at 2 AM
-cron.schedule('0 2 * * *', () => {
-    console.log('💾 Backing up sessions...');
-    console.log('✅ Session backup complete');
-});
-
-// ============ START ALL BOTS ============
+// Start all restaurant bots
 async function startAllBots() {
     console.log("\n" + "=".repeat(60));
-    console.log("🚀 JAVAGOAT WHATSAPP BOT MANAGER v4.0");
-    console.log("🔋 24/7 Auto-Reconnect Enabled");
+    console.log("🚀 JAVAGOAT MULTI-BOT MANAGER v5.0");
+    console.log("🔋 Auto-Reconnect & Session Persistence Enabled");
     console.log("=".repeat(60));
     console.log(`📡 Firebase URL: ${FIREBASE_URL}\n`);
     
@@ -346,7 +302,7 @@ async function startAllBots() {
     
     const restaurants = await fetchFromFirebase('restaurants');
     if (!restaurants) {
-        console.log("❌ No restaurants found in database");
+        console.log("❌ No restaurants found. Add restaurants from admin panel first.");
         return;
     }
     
@@ -359,47 +315,62 @@ async function startAllBots() {
     
     if (activeRestaurants.length === 0) {
         console.log("❌ No active restaurants with WhatsApp numbers found.");
+        console.log("Please add restaurants from the admin panel first.");
         return;
     }
     
-    console.log(`📊 Found ${activeRestaurants.length} restaurant(s):\n`);
+    console.log(`📊 Found ${activeRestaurants.length} restaurant(s) to connect:\n`);
     activeRestaurants.forEach((rest, idx) => {
         console.log(`   ${idx + 1}. ${rest.name} - WhatsApp: ${rest.whatsappNumber}`);
     });
     console.log("\n" + "=".repeat(60));
     
+    let botCount = 0;
     for (const rest of activeRestaurants) {
-        console.log(`\n🚀 Starting bot for ${rest.name}...`);
-        await createBotInstance(rest.id, rest);
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        botCount++;
+        console.log(`\n[${botCount}/${activeRestaurants.length}] Starting bot for ${rest.name}...`);
+        await createBotForRestaurant(rest.id, rest);
+        // Wait 8 seconds between bot creations to avoid rate limiting
+        if (botCount < activeRestaurants.length) {
+            console.log(`⏳ Waiting 8 seconds before starting next bot...`);
+            await new Promise(resolve => setTimeout(resolve, 8000));
+        }
     }
     
     console.log("\n" + "=".repeat(60));
-    console.log(`✅ ALL BOTS STARTED WITH AUTO-RECONNECT!`);
-    console.log("🔋 Keep-alive server running");
+    console.log(`✅ ${botCount} BOT(S) STARTED SUCCESSFULLY!`);
     console.log("🔄 Auto-reconnect enabled");
+    console.log("💾 Sessions are saved between restarts");
     console.log("=".repeat(60));
-    console.log("\n💡 TIPS:");
-    console.log("   • Bots will auto-reconnect if disconnected");
-    console.log("   • Sessions are saved and restored");
-    console.log("   • Health check every 5 minutes");
-    console.log("   • QR codes will regenerate if needed\n");
+    console.log("\n💡 NEXT STEPS:");
+    console.log("   1. Scan the QR codes above with their respective WhatsApp numbers");
+    console.log("   2. Bots will stay connected 24/7");
+    console.log("   3. If disconnected, bots will auto-reconnect\n");
+    
+    // Keep process alive
+    setInterval(() => {
+        const onlineCount = Array.from(activeBots.values()).filter(sock => sock && sock.user).length;
+        console.log(`💓 System Heartbeat - ${new Date().toISOString()} - ${onlineCount}/${activeRestaurants.length} bots online`);
+    }, 60000);
 }
 
-// ============ GRACEFUL SHUTDOWN ============
+// Graceful shutdown
 process.on('SIGINT', async () => {
-    console.log('\n🛑 Shutting down...');
+    console.log('\n🛑 Shutting down gracefully...');
     for (const [id, sock] of activeBots) {
         if (sock && sock.end) {
             await sock.end();
+        }
+        if (sock && sock.heartbeat) {
+            clearInterval(sock.heartbeat);
         }
     }
     process.exit(0);
 });
 
+// Error handlers
 process.on('uncaughtException', (err) => {
     console.error('❌ Uncaught Exception:', err);
-    // Don't exit, let the bot try to recover
 });
 
 process.on('unhandledRejection', (reason, promise) => {
