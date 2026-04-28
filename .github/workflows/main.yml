@@ -1,26 +1,49 @@
-name: JavaGoat-WhatsApp-Bot
+name: JavaGoat WhatsApp Bot (24/7)
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: '0 */5 * * *' 
+    - cron: '*/5 * * * *'  # Check every 5 minutes
+  workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 355  # Almost 6 hours
+    
     steps:
-      - name: Checkout Code
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: 🔧 Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      - name: Install Dependencies
+      - name: 📦 Install dependencies
         run: npm install
 
-      - name: Start AI Bot
+      - name: 📁 Create sessions directory
+        run: mkdir -p sessions
+
+      - name: 💾 Restore session cache
+        uses: actions/cache@v3
+        with:
+          path: sessions/
+          key: sessions-${{ github.run_id }}
+          restore-keys: |
+            sessions-
+
+      - name: 🤖 Start WhatsApp Bot with Auto-Reconnect
         env:
           FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
         run: npm start
+        continue-on-error: true
+
+      - name: 💾 Save session cache
+        uses: actions/cache@v3
+        with:
+          path: sessions/
+          key: sessions-${{ github.run_id }}
