@@ -3,42 +3,47 @@ name: JavaGoat-WhatsApp-Bot
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/5 * * * *'  # Runs every 5 minutes (not every 5 hours)
+    - cron: '*/10 * * * *'  # Runs every 10 minutes
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 350  # GitHub Actions max runtime
+    timeout-minutes: 350
     
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '18'  # Changed from 20 to 18 (more stable)
           cache: 'npm'
 
+      - name: Generate package-lock.json
+        run: |
+          if [ ! -f package-lock.json ]; then
+            npm install --package-lock-only
+          fi
+
       - name: Install Dependencies
-        run: npm install
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Restore Session Cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
-          path: sessions/
-          key: wabot-sessions-${{ github.run_id }}
+          path: |
+            sessions/
+            node_modules/
+          key: wabot-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            wabot-sessions-
+            wabot-${{ runner.os }}-
 
       - name: Start WhatsApp Bot
         env:
           FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
-        run: npm start
-        continue-on-error: true  # IMPORTANT: Don't fail on errors
-
-      - name: Save Session Cache
-        uses: actions/cache@v3
-        with:
-          path: sessions/
-          key: wabot-sessions-${{ github.run_id }}
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: false
+        run: node index.js
+        continue-on-error: true
