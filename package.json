@@ -1,22 +1,21 @@
 {
   "name": "javagoat-whatsapp-bot",
   "version": "5.0.0",
-  "lockfileVersion": 3,
-  "requires": true,
-  "packages": {
-    "": {
-      "name": "javagoat-whatsapp-bot",
-      "version": "5.0.0",
-      "dependencies": {
-        "@whiskeysockets/baileys": "^6.6.0",
-        "express": "^4.18.2",
-        "node-fetch": "^2.7.0",
-        "pino": "^8.19.0",
-        "qrcode-terminal": "^0.12.0"
-      },
-      "engines": {
-        "node": ">=18.0.0"
-      }
-    }
+  "description": "24/7 WhatsApp Bot for JavaGoat Restaurants",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "postinstall": "npm run build-sessions"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.6.0",
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0",
+    "pino": "^8.19.0",
+    "qrcode-terminal": "^0.12.0"
   }
 }
