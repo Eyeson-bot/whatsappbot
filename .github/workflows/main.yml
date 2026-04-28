@@ -3,7 +3,7 @@ name: JavaGoat-WhatsApp-Bot
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/10 * * * *'  # Every 10 minutes
+    - cron: '*/10 * * * *'
 
 jobs:
   build:
@@ -20,20 +20,16 @@ jobs:
           node-version: '18'
           cache: 'npm'
 
-      - name: Create package-lock.json if missing
+      - name: Clean npm cache
         run: |
-          if [ ! -f package-lock.json ]; then
-            echo "📦 Generating package-lock.json..."
-            npm install --package-lock-only
-          fi
+          npm cache clean --force
+          rm -rf node_modules package-lock.json
 
       - name: Install Dependencies
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci --prefer-offline --no-audit --no-fund || npm install
-          else
-            npm install
-          fi
+          npm install --no-package-lock --legacy-peer-deps
+        env:
+          npm_config_registry: https://registry.npmjs.org/
 
       - name: Create sessions directory
         run: mkdir -p sessions
@@ -49,6 +45,7 @@ jobs:
       - name: Start WhatsApp Bot
         env:
           FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
+          NODE_OPTIONS: "--max-old-space-size=512"
         run: node index.js
         continue-on-error: true
 
